@@ -33,8 +33,10 @@ function clamp(value, min, max) {
 
 function toWorldCoordinates(clientX, clientY) {
   const rect = canvas.getBoundingClientRect();
-  const x = (clientX - rect.left - state.offsetX) / state.zoom;
-  const y = (clientY - rect.top - state.offsetY) / state.zoom;
+  const scaleX = canvas.width / rect.width;
+  const scaleY = canvas.height / rect.height;
+  const x = ((clientX - rect.left) * scaleX - state.offsetX) / state.zoom;
+  const y = ((clientY - rect.top) * scaleY - state.offsetY) / state.zoom;
   return { x, y };
 }
 
@@ -198,20 +200,9 @@ function draw() {
     ctx.drawImage(state.backgroundImage, 0, 0);
   }
 
-  ctx.lineWidth = 1 / state.zoom;
-  ctx.strokeStyle = "#8a93a3";
-  ctx.beginPath();
-  state.points.forEach((point, index) => {
-    if (index === 0) {
-      ctx.moveTo(point.x, point.y);
-    } else {
-      ctx.lineTo(point.x, point.y);
-    }
-  });
-  ctx.stroke();
-
   if (state.points.length > 1) {
     ctx.strokeStyle = "#f39a1e";
+    ctx.lineWidth = 1 / state.zoom;
     ctx.setLineDash([8 / state.zoom, 6 / state.zoom]);
     ctx.beginPath();
     ctx.moveTo(state.points[0].x, state.points[0].y);
@@ -228,14 +219,19 @@ function draw() {
     ctx.setLineDash([]);
   }
 
-  const midpointData = getMidpointCurveData();
-  ctx.strokeStyle = "#4c8f3b";
-  ctx.setLineDash([8 / state.zoom, 6 / state.zoom]);
-  ctx.beginPath();
-  ctx.moveTo(midpointData.tangentStart.x, midpointData.tangentStart.y);
-  ctx.lineTo(midpointData.tangentEnd.x, midpointData.tangentEnd.y);
-  ctx.stroke();
-  ctx.setLineDash([]);
+  const showMidHandle = state.points.length > 2;
+  const midpointData = showMidHandle ? getMidpointCurveData() : null;
+
+  if (showMidHandle) {
+    ctx.strokeStyle = "#4c8f3b";
+    ctx.lineWidth = 1 / state.zoom;
+    ctx.setLineDash([8 / state.zoom, 6 / state.zoom]);
+    ctx.beginPath();
+    ctx.moveTo(midpointData.tangentStart.x, midpointData.tangentStart.y);
+    ctx.lineTo(midpointData.tangentEnd.x, midpointData.tangentEnd.y);
+    ctx.stroke();
+    ctx.setLineDash([]);
+  }
 
   ctx.strokeStyle = "#2b63ff";
   ctx.lineWidth = 2 / state.zoom;
@@ -251,7 +247,7 @@ function draw() {
   }
   ctx.stroke();
 
-  state.points.forEach((point) => {
+  [state.points[0], state.points[state.points.length - 1]].forEach((point) => {
     ctx.beginPath();
     ctx.arc(point.x, point.y, 7 / state.zoom, 0, Math.PI * 2);
     ctx.fillStyle = "#ffffff";
@@ -261,20 +257,23 @@ function draw() {
     ctx.stroke();
   });
 
-  ctx.beginPath();
-  ctx.arc(midpointData.point.x, midpointData.point.y, 6 / state.zoom, 0, Math.PI * 2);
-  ctx.fillStyle = "#ffec9a";
-  ctx.fill();
-  ctx.lineWidth = 2 / state.zoom;
-  ctx.strokeStyle = "#5a4a0a";
-  ctx.stroke();
+  if (showMidHandle) {
+    ctx.beginPath();
+    ctx.arc(midpointData.point.x, midpointData.point.y, 6 / state.zoom, 0, Math.PI * 2);
+    ctx.fillStyle = "#ffec9a";
+    ctx.fill();
+    ctx.lineWidth = 2 / state.zoom;
+    ctx.strokeStyle = "#5a4a0a";
+    ctx.stroke();
+  }
 }
 
 canvas.addEventListener("pointerdown", (event) => {
   const position = toWorldCoordinates(event.clientX, event.clientY);
   const hitRadius = 10 / state.zoom;
 
-  for (let i = state.points.length - 1; i >= 0; i -= 1) {
+  const endpointIndices = [0, state.points.length - 1];
+  for (const i of endpointIndices) {
     const point = state.points[i];
     if (Math.hypot(point.x - position.x, point.y - position.y) <= hitRadius) {
       beginDrag("control-point", event, { pointIndex: i });
@@ -282,10 +281,22 @@ canvas.addEventListener("pointerdown", (event) => {
     }
   }
 
-  const midpointData = getMidpointCurveData();
-  if (Math.hypot(midpointData.point.x - position.x, midpointData.point.y - position.y) <= hitRadius) {
-    beginDrag("middle-control", event, { lastPosition: midpointData.point });
-    return;
+  const showMidHandle = state.points.length > 2;
+
+  if (showMidHandle) {
+    const midpointData = getMidpointCurveData();
+    if (Math.hypot(midpointData.point.x - position.x, midpointData.point.y - position.y) <= hitRadius) {
+      beginDrag("middle-control", event, { lastPosition: midpointData.point });
+      return;
+    }
+
+    if (
+      distancePointToSegment(position, midpointData.tangentStart, midpointData.tangentEnd) <=
+      hitRadius
+    ) {
+      beginDrag("middle-tangent", event, { lastPosition: position });
+      return;
+    }
   }
 
   if (state.points.length > 1) {
@@ -300,14 +311,7 @@ canvas.addEventListener("pointerdown", (event) => {
       hitRadius
     ) {
       beginDrag("end-tangent", event, { lastPosition: position });
-      return;
     }
-  }
-
-  if (
-    distancePointToSegment(position, midpointData.tangentStart, midpointData.tangentEnd) <= hitRadius
-  ) {
-    beginDrag("middle-tangent", event, { lastPosition: position });
   }
 });
 
