@@ -5,7 +5,7 @@ const bgImageInput = document.getElementById("bgImageInput");
 const zoomInButton = document.getElementById("zoomInButton");
 const zoomOutButton = document.getElementById("zoomOutButton");
 const resetViewButton = document.getElementById("resetViewButton");
-const CURVE_SAMPLE_COUNT = 250;
+const CURVE_SAMPLE_STEPS = 250;
 
 const state = {
   order: Number(orderInput.value),
@@ -120,8 +120,8 @@ function draw() {
   ctx.strokeStyle = "#2b63ff";
   ctx.lineWidth = 2 / state.zoom;
   ctx.beginPath();
-  for (let i = 0; i <= CURVE_SAMPLE_COUNT; i += 1) {
-    const t = i / CURVE_SAMPLE_COUNT;
+  for (let i = 0; i <= CURVE_SAMPLE_STEPS; i += 1) {
+    const t = i / CURVE_SAMPLE_STEPS;
     const point = evaluateBezier(state.points, t);
     if (i === 0) {
       ctx.moveTo(point.x, point.y);
@@ -222,6 +222,15 @@ bgImageInput.addEventListener("change", (event) => {
       return;
     }
     state.backgroundImage = image;
+    draw();
+  };
+  image.onerror = () => {
+    if (state.backgroundImageObjectURL !== objectURL) {
+      return;
+    }
+    URL.revokeObjectURL(objectURL);
+    state.backgroundImageObjectURL = null;
+    state.backgroundImage = null;
     draw();
   };
   image.src = objectURL;
