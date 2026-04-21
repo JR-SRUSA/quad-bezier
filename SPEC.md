@@ -6,8 +6,9 @@ Provide a lightweight HTML/CSS/JS web app that lets users draw and edit a Bezier
 
 ## Terminology
 
-In this spec and app UI, **curve order** means **Bezier degree**.  
-Example: order 4 = degree 4 = 5 control points.
+In this project UI/spec, **curve order** is intentionally used as an alias for **Bezier degree**.  
+Formal math texts may define "order" differently, but this app uses:
+- order 4 = degree 4 = 5 control points
 
 ## Functional Requirements
 

@@ -5,7 +5,7 @@ const bgImageInput = document.getElementById("bgImageInput");
 const zoomInButton = document.getElementById("zoomInButton");
 const zoomOutButton = document.getElementById("zoomOutButton");
 const resetViewButton = document.getElementById("resetViewButton");
-const CURVE_SAMPLE_STEPS = 250;
+const CURVE_SAMPLE_COUNT = 250;
 
 const state = {
   order: Number(orderInput.value),
@@ -120,8 +120,8 @@ function draw() {
   ctx.strokeStyle = "#2b63ff";
   ctx.lineWidth = 2 / state.zoom;
   ctx.beginPath();
-  for (let i = 0; i <= CURVE_SAMPLE_STEPS; i += 1) {
-    const t = i / CURVE_SAMPLE_STEPS;
+  for (let i = 0; i <= CURVE_SAMPLE_COUNT; i += 1) {
+    const t = i / CURVE_SAMPLE_COUNT;
     const point = evaluateBezier(state.points, t);
     if (i === 0) {
       ctx.moveTo(point.x, point.y);
@@ -207,14 +207,14 @@ bgImageInput.addEventListener("change", (event) => {
     state.backgroundImageObjectURL = null;
   }
 
-  const [firstFile] = event.target.files;
-  if (!firstFile) {
+  const [file] = event.target.files;
+  if (!file) {
     state.backgroundImage = null;
     draw();
     return;
   }
 
-  const objectURL = URL.createObjectURL(firstFile);
+  const objectURL = URL.createObjectURL(file);
   state.backgroundImageObjectURL = objectURL;
   const image = new Image();
   image.onload = () => {
@@ -228,6 +228,7 @@ bgImageInput.addEventListener("change", (event) => {
     if (state.backgroundImageObjectURL !== objectURL) {
       return;
     }
+    console.error("Failed to load background image.");
     URL.revokeObjectURL(objectURL);
     state.backgroundImageObjectURL = null;
     state.backgroundImage = null;
