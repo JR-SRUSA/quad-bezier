@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Bezier Editor</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <main class="app">
+      <section class="controls">
+        <label for="orderInput">Curve order</label>
+        <input id="orderInput" type="number" min="1" max="8" value="4" />
+
+        <button id="zoomInButton" type="button">Zoom +</button>
+        <button id="zoomOutButton" type="button">Zoom -</button>
+        <button id="resetViewButton" type="button">Reset View</button>
+
+        <label for="bgImageInput">Background image</label>
+        <input id="bgImageInput" type="file" accept="image/*" />
+      </section>
+
+      <canvas id="bezierCanvas" width="1000" height="650" aria-label="Bezier editor canvas"></canvas>
+    </main>
+
+    <script src="app.js"></script>
+  </body>
+</html>
