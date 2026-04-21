@@ -65,7 +65,10 @@ function getViewportCenter() {
 }
 
 function setZoom(nextZoom, anchorX, anchorY) {
-  const anchor = anchorX == null || anchorY == null ? getViewportCenter() : { x: anchorX, y: anchorY };
+  const anchor =
+    anchorX === undefined || anchorY === undefined
+      ? getViewportCenter()
+      : { x: anchorX, y: anchorY };
   const previousZoom = state.zoom;
   const clampedZoom = clamp(nextZoom, state.minZoom, state.maxZoom);
   if (clampedZoom === previousZoom) {
@@ -202,8 +205,8 @@ resetViewButton.addEventListener("click", () => {
 });
 
 bgImageInput.addEventListener("change", (event) => {
-  const [file] = event.target.files;
-  if (!file) {
+  const [selectedFile] = event.target.files;
+  if (!selectedFile) {
     state.backgroundImage = null;
     draw();
     return;
@@ -214,7 +217,7 @@ bgImageInput.addEventListener("change", (event) => {
     draw();
     URL.revokeObjectURL(image.src);
   };
-  image.src = URL.createObjectURL(file);
+  image.src = URL.createObjectURL(selectedFile);
 });
 
 setCurveOrder(state.order);
