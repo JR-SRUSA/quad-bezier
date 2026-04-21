@@ -4,6 +4,11 @@
 
 Provide a lightweight HTML/CSS/JS web app that lets users draw and edit a Bezier curve using visible control points, including tangent visualization, with optional background image support and shared zoom behavior.
 
+## Terminology
+
+In this spec and app UI, **curve order** means **Bezier degree**.  
+Example: order 4 = degree 4 = 5 control points.
+
 ## Functional Requirements
 
 1. Render a default 4th-order (degree 4) Bezier curve on a canvas.

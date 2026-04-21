@@ -4,7 +4,7 @@ Lightweight browser app for drawing and editing Bezier curves over a canvas back
 
 ## Run
 
-Open `/home/runner/work/quad-bezier/quad-bezier/index.html` in a browser.
+Open `index.html` in a browser.
 
 ## Features
 
@@ -16,4 +16,4 @@ Open `/home/runner/work/quad-bezier/quad-bezier/index.html` in a browser.
 
 ## Spec
 
-See `/home/runner/work/quad-bezier/quad-bezier/SPEC.md`.
+See `SPEC.md`.
