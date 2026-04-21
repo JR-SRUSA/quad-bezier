@@ -1,0 +1,44 @@
+:root {
+  color-scheme: light;
+  font-family: Arial, sans-serif;
+}
+
+body {
+  margin: 0;
+  background: #f6f7fb;
+}
+
+.app {
+  display: grid;
+  gap: 0.75rem;
+  max-width: 1100px;
+  margin: 0 auto;
+  padding: 1rem;
+}
+
+.controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem 0.75rem;
+  background: #ffffff;
+  border: 1px solid #d6dae3;
+  border-radius: 0.5rem;
+  padding: 0.75rem;
+}
+
+.controls input[type="number"] {
+  width: 4rem;
+}
+
+#bezierCanvas {
+  display: block;
+  width: 100%;
+  height: auto;
+  background: #ffffff;
+  border: 1px solid #ccd1db;
+  border-radius: 0.5rem;
+  box-shadow: 0 4px 14px rgba(26, 32, 44, 0.08);
+  touch-action: none;
+  cursor: crosshair;
+}

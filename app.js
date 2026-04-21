@@ -1,0 +1,214 @@
+const canvas = document.getElementById("bezierCanvas");
+const ctx = canvas.getContext("2d");
+const orderInput = document.getElementById("orderInput");
+const bgImageInput = document.getElementById("bgImageInput");
+const zoomInButton = document.getElementById("zoomInButton");
+const zoomOutButton = document.getElementById("zoomOutButton");
+const resetViewButton = document.getElementById("resetViewButton");
+
+const state = {
+  order: Number(orderInput.value),
+  points: [],
+  draggingPointIndex: -1,
+  zoom: 1,
+  minZoom: 0.25,
+  maxZoom: 6,
+  offsetX: 0,
+  offsetY: 0,
+  backgroundImage: null,
+};
+
+function clamp(value, min, max) {
+  return Math.min(max, Math.max(min, value));
+}
+
+function toWorldCoordinates(clientX, clientY) {
+  const rect = canvas.getBoundingClientRect();
+  const x = (clientX - rect.left - state.offsetX) / state.zoom;
+  const y = (clientY - rect.top - state.offsetY) / state.zoom;
+  return { x, y };
+}
+
+function createDefaultPoints(order) {
+  const count = order + 1;
+  const spacing = canvas.width / (count + 1);
+  return Array.from({ length: count }, (_, i) => ({
+    x: spacing * (i + 1),
+    y: canvas.height * (0.28 + (i % 2) * 0.44),
+  }));
+}
+
+function evaluateBezier(points, t) {
+  const work = points.map((point) => ({ ...point }));
+  for (let level = 1; level < work.length; level += 1) {
+    for (let i = 0; i < work.length - level; i += 1) {
+      work[i] = {
+        x: work[i].x * (1 - t) + work[i + 1].x * t,
+        y: work[i].y * (1 - t) + work[i + 1].y * t,
+      };
+    }
+  }
+  return work[0];
+}
+
+function setCurveOrder(order) {
+  state.order = clamp(order, 1, 8);
+  orderInput.value = String(state.order);
+  state.points = createDefaultPoints(state.order);
+  draw();
+}
+
+function setZoom(nextZoom, anchorX = canvas.width / 2, anchorY = canvas.height / 2) {
+  const previousZoom = state.zoom;
+  const clampedZoom = clamp(nextZoom, state.minZoom, state.maxZoom);
+  if (clampedZoom === previousZoom) {
+    return;
+  }
+  state.offsetX = anchorX - ((anchorX - state.offsetX) / previousZoom) * clampedZoom;
+  state.offsetY = anchorY - ((anchorY - state.offsetY) / previousZoom) * clampedZoom;
+  state.zoom = clampedZoom;
+  draw();
+}
+
+function draw() {
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+  ctx.setTransform(state.zoom, 0, 0, state.zoom, state.offsetX, state.offsetY);
+
+  if (state.backgroundImage) {
+    ctx.drawImage(state.backgroundImage, 0, 0);
+  }
+
+  ctx.lineWidth = 1 / state.zoom;
+  ctx.strokeStyle = "#8a93a3";
+  ctx.beginPath();
+  state.points.forEach((point, index) => {
+    if (index === 0) {
+      ctx.moveTo(point.x, point.y);
+    } else {
+      ctx.lineTo(point.x, point.y);
+    }
+  });
+  ctx.stroke();
+
+  if (state.points.length > 1) {
+    ctx.strokeStyle = "#f39a1e";
+    ctx.setLineDash([8 / state.zoom, 6 / state.zoom]);
+    ctx.beginPath();
+    ctx.moveTo(state.points[0].x, state.points[0].y);
+    ctx.lineTo(state.points[1].x, state.points[1].y);
+    ctx.moveTo(
+      state.points[state.points.length - 1].x,
+      state.points[state.points.length - 1].y,
+    );
+    ctx.lineTo(
+      state.points[state.points.length - 2].x,
+      state.points[state.points.length - 2].y,
+    );
+    ctx.stroke();
+    ctx.setLineDash([]);
+  }
+
+  ctx.strokeStyle = "#2b63ff";
+  ctx.lineWidth = 2 / state.zoom;
+  ctx.beginPath();
+  const samples = 250;
+  for (let i = 0; i <= samples; i += 1) {
+    const t = i / samples;
+    const point = evaluateBezier(state.points, t);
+    if (i === 0) {
+      ctx.moveTo(point.x, point.y);
+    } else {
+      ctx.lineTo(point.x, point.y);
+    }
+  }
+  ctx.stroke();
+
+  state.points.forEach((point) => {
+    ctx.beginPath();
+    ctx.arc(point.x, point.y, 7 / state.zoom, 0, Math.PI * 2);
+    ctx.fillStyle = "#ffffff";
+    ctx.fill();
+    ctx.lineWidth = 2 / state.zoom;
+    ctx.strokeStyle = "#1e1f23";
+    ctx.stroke();
+  });
+}
+
+canvas.addEventListener("pointerdown", (event) => {
+  const position = toWorldCoordinates(event.clientX, event.clientY);
+  const hitRadius = 10 / state.zoom;
+  for (let i = state.points.length - 1; i >= 0; i -= 1) {
+    const point = state.points[i];
+    if (Math.hypot(point.x - position.x, point.y - position.y) <= hitRadius) {
+      state.draggingPointIndex = i;
+      canvas.setPointerCapture(event.pointerId);
+      return;
+    }
+  }
+});
+
+canvas.addEventListener("pointermove", (event) => {
+  if (state.draggingPointIndex < 0) {
+    return;
+  }
+  const position = toWorldCoordinates(event.clientX, event.clientY);
+  state.points[state.draggingPointIndex] = position;
+  draw();
+});
+
+canvas.addEventListener("pointerup", (event) => {
+  if (state.draggingPointIndex >= 0) {
+    canvas.releasePointerCapture(event.pointerId);
+  }
+  state.draggingPointIndex = -1;
+});
+
+canvas.addEventListener("pointercancel", () => {
+  state.draggingPointIndex = -1;
+});
+
+canvas.addEventListener(
+  "wheel",
+  (event) => {
+    event.preventDefault();
+    const zoomFactor = event.deltaY < 0 ? 1.12 : 1 / 1.12;
+    const rect = canvas.getBoundingClientRect();
+    const anchorX = event.clientX - rect.left;
+    const anchorY = event.clientY - rect.top;
+    setZoom(state.zoom * zoomFactor, anchorX, anchorY);
+  },
+  { passive: false },
+);
+
+orderInput.addEventListener("change", () => {
+  setCurveOrder(Number(orderInput.value));
+});
+
+zoomInButton.addEventListener("click", () => setZoom(state.zoom * 1.2));
+zoomOutButton.addEventListener("click", () => setZoom(state.zoom / 1.2));
+resetViewButton.addEventListener("click", () => {
+  state.zoom = 1;
+  state.offsetX = 0;
+  state.offsetY = 0;
+  draw();
+});
+
+bgImageInput.addEventListener("change", (event) => {
+  const [file] = event.target.files;
+  if (!file) {
+    state.backgroundImage = null;
+    draw();
+    return;
+  }
+  const image = new Image();
+  image.onload = () => {
+    state.backgroundImage = image;
+    draw();
+    URL.revokeObjectURL(image.src);
+  };
+  image.src = URL.createObjectURL(file);
+});
+
+setCurveOrder(state.order);
