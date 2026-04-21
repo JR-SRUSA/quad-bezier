@@ -6,11 +6,18 @@ const zoomInButton = document.getElementById("zoomInButton");
 const zoomOutButton = document.getElementById("zoomOutButton");
 const resetViewButton = document.getElementById("resetViewButton");
 const CURVE_SAMPLE_COUNT = 250;
+const MIDPOINT_T = 0.5;
+const MIDPOINT_TANGENT_HALF_LENGTH = 60;
 
 const state = {
   order: Number(orderInput.value),
   points: [],
-  draggingPointIndex: -1,
+  drag: {
+    type: null,
+    pointIndex: -1,
+    pointerId: null,
+    lastPosition: null,
+  },
   zoom: 1,
   minZoom: 0.25,
   maxZoom: 6,
@@ -51,6 +58,97 @@ function evaluateBezier(points, t) {
     }
   }
   return work[0];
+}
+
+function evaluateBezierDerivative(points, t) {
+  const degree = points.length - 1;
+  if (degree <= 0) {
+    return { x: 0, y: 0 };
+  }
+  const derivativePoints = Array.from({ length: degree }, (_, i) => ({
+    x: degree * (points[i + 1].x - points[i].x),
+    y: degree * (points[i + 1].y - points[i].y),
+  }));
+  return evaluateBezier(derivativePoints, t);
+}
+
+function getMidpointCurveData() {
+  const point = evaluateBezier(state.points, MIDPOINT_T);
+  let tangent = evaluateBezierDerivative(state.points, MIDPOINT_T);
+  let tangentLength = Math.hypot(tangent.x, tangent.y);
+
+  if (tangentLength < 0.0001) {
+    const low = evaluateBezier(state.points, MIDPOINT_T - 0.01);
+    const high = evaluateBezier(state.points, MIDPOINT_T + 0.01);
+    tangent = { x: high.x - low.x, y: high.y - low.y };
+    tangentLength = Math.hypot(tangent.x, tangent.y);
+  }
+
+  if (tangentLength < 0.0001) {
+    tangent = { x: 1, y: 0 };
+    tangentLength = 1;
+  }
+
+  const unit = {
+    x: tangent.x / tangentLength,
+    y: tangent.y / tangentLength,
+  };
+
+  return {
+    point,
+    tangentStart: {
+      x: point.x - unit.x * MIDPOINT_TANGENT_HALF_LENGTH,
+      y: point.y - unit.y * MIDPOINT_TANGENT_HALF_LENGTH,
+    },
+    tangentEnd: {
+      x: point.x + unit.x * MIDPOINT_TANGENT_HALF_LENGTH,
+      y: point.y + unit.y * MIDPOINT_TANGENT_HALF_LENGTH,
+    },
+  };
+}
+
+function distancePointToSegment(point, start, end) {
+  const segmentX = end.x - start.x;
+  const segmentY = end.y - start.y;
+  const segmentLengthSquared = segmentX * segmentX + segmentY * segmentY;
+  if (segmentLengthSquared === 0) {
+    return Math.hypot(point.x - start.x, point.y - start.y);
+  }
+  const t = clamp(
+    ((point.x - start.x) * segmentX + (point.y - start.y) * segmentY) / segmentLengthSquared,
+    0,
+    1,
+  );
+  const projected = {
+    x: start.x + segmentX * t,
+    y: start.y + segmentY * t,
+  };
+  return Math.hypot(point.x - projected.x, point.y - projected.y);
+}
+
+function getMiddleControlTargetIndex() {
+  if (state.points.length <= 2) {
+    return -1;
+  }
+  return Math.floor(state.points.length / 2);
+}
+
+function beginDrag(type, event, options = {}) {
+  state.drag.type = type;
+  state.drag.pointIndex = options.pointIndex ?? -1;
+  state.drag.pointerId = event.pointerId;
+  state.drag.lastPosition = options.lastPosition ?? null;
+  canvas.setPointerCapture(event.pointerId);
+}
+
+function clearDrag(event) {
+  if (state.drag.pointerId !== null && event) {
+    canvas.releasePointerCapture(event.pointerId);
+  }
+  state.drag.type = null;
+  state.drag.pointIndex = -1;
+  state.drag.pointerId = null;
+  state.drag.lastPosition = null;
 }
 
 function setCurveOrder(order) {
@@ -117,6 +215,15 @@ function draw() {
     ctx.setLineDash([]);
   }
 
+  const midpointData = getMidpointCurveData();
+  ctx.strokeStyle = "#4c8f3b";
+  ctx.setLineDash([8 / state.zoom, 6 / state.zoom]);
+  ctx.beginPath();
+  ctx.moveTo(midpointData.tangentStart.x, midpointData.tangentStart.y);
+  ctx.lineTo(midpointData.tangentEnd.x, midpointData.tangentEnd.y);
+  ctx.stroke();
+  ctx.setLineDash([]);
+
   ctx.strokeStyle = "#2b63ff";
   ctx.lineWidth = 2 / state.zoom;
   ctx.beginPath();
@@ -140,39 +247,111 @@ function draw() {
     ctx.strokeStyle = "#1e1f23";
     ctx.stroke();
   });
+
+  ctx.beginPath();
+  ctx.arc(midpointData.point.x, midpointData.point.y, 6 / state.zoom, 0, Math.PI * 2);
+  ctx.fillStyle = "#ffec9a";
+  ctx.fill();
+  ctx.lineWidth = 2 / state.zoom;
+  ctx.strokeStyle = "#5a4a0a";
+  ctx.stroke();
 }
 
 canvas.addEventListener("pointerdown", (event) => {
   const position = toWorldCoordinates(event.clientX, event.clientY);
   const hitRadius = 10 / state.zoom;
+
   for (let i = state.points.length - 1; i >= 0; i -= 1) {
     const point = state.points[i];
     if (Math.hypot(point.x - position.x, point.y - position.y) <= hitRadius) {
-      state.draggingPointIndex = i;
-      canvas.setPointerCapture(event.pointerId);
+      beginDrag("control-point", event, { pointIndex: i });
       return;
     }
+  }
+
+  const midpointData = getMidpointCurveData();
+  if (Math.hypot(midpointData.point.x - position.x, midpointData.point.y - position.y) <= hitRadius) {
+    beginDrag("middle-control", event);
+    return;
+  }
+
+  if (state.points.length > 1) {
+    if (distancePointToSegment(position, state.points[0], state.points[1]) <= hitRadius) {
+      beginDrag("start-tangent", event, { lastPosition: position });
+      return;
+    }
+
+    const lastIndex = state.points.length - 1;
+    if (
+      distancePointToSegment(position, state.points[lastIndex], state.points[lastIndex - 1]) <=
+      hitRadius
+    ) {
+      beginDrag("end-tangent", event, { lastPosition: position });
+      return;
+    }
+  }
+
+  if (
+    distancePointToSegment(position, midpointData.tangentStart, midpointData.tangentEnd) <= hitRadius
+  ) {
+    beginDrag("middle-tangent", event, { lastPosition: position });
   }
 });
 
 canvas.addEventListener("pointermove", (event) => {
-  if (state.draggingPointIndex < 0) {
+  if (!state.drag.type) {
     return;
   }
   const position = toWorldCoordinates(event.clientX, event.clientY);
-  state.points[state.draggingPointIndex] = position;
+  if (state.drag.type === "control-point" && state.drag.pointIndex >= 0) {
+    state.points[state.drag.pointIndex] = position;
+  } else if (state.drag.type === "middle-control") {
+    const targetIndex = getMiddleControlTargetIndex();
+    if (targetIndex >= 0) {
+      const midpoint = evaluateBezier(state.points, MIDPOINT_T);
+      state.points[targetIndex] = {
+        x: state.points[targetIndex].x + (position.x - midpoint.x),
+        y: state.points[targetIndex].y + (position.y - midpoint.y),
+      };
+    }
+  } else if (state.drag.type === "start-tangent" && state.drag.lastPosition && state.points.length > 1) {
+    const deltaX = position.x - state.drag.lastPosition.x;
+    const deltaY = position.y - state.drag.lastPosition.y;
+    state.points[1] = {
+      x: state.points[1].x + deltaX,
+      y: state.points[1].y + deltaY,
+    };
+    state.drag.lastPosition = position;
+  } else if (state.drag.type === "end-tangent" && state.drag.lastPosition && state.points.length > 1) {
+    const deltaX = position.x - state.drag.lastPosition.x;
+    const deltaY = position.y - state.drag.lastPosition.y;
+    const controlIndex = state.points.length - 2;
+    state.points[controlIndex] = {
+      x: state.points[controlIndex].x + deltaX,
+      y: state.points[controlIndex].y + deltaY,
+    };
+    state.drag.lastPosition = position;
+  } else if (state.drag.type === "middle-tangent" && state.drag.lastPosition) {
+    const targetIndex = getMiddleControlTargetIndex();
+    if (targetIndex >= 0) {
+      const deltaX = position.x - state.drag.lastPosition.x;
+      const deltaY = position.y - state.drag.lastPosition.y;
+      state.points[targetIndex] = {
+        x: state.points[targetIndex].x + deltaX,
+        y: state.points[targetIndex].y + deltaY,
+      };
+      state.drag.lastPosition = position;
+    }
+  }
   draw();
 });
 
 canvas.addEventListener("pointerup", (event) => {
-  if (state.draggingPointIndex >= 0) {
-    canvas.releasePointerCapture(event.pointerId);
-  }
-  state.draggingPointIndex = -1;
+  clearDrag(event);
 });
 
-canvas.addEventListener("pointercancel", () => {
-  state.draggingPointIndex = -1;
+canvas.addEventListener("pointercancel", (event) => {
+  clearDrag(event);
 });
 
 canvas.addEventListener(

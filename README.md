@@ -10,7 +10,8 @@ Open `index.html` in a browser.
 
 - Default 4th-order (degree 4) Bezier curve with draggable control points
 - Configurable order (degree) for custom control-point count
-- Control polygon and endpoint tangent visualization
+- Control polygon plus tangent visualization at start, middle, and end
+- Draggable middle-on-curve control handle and draggable tangent guides
 - Background image upload rendered on the same zoomed canvas space as the curve
 - Zoom in/out controls (buttons and mouse wheel)
 
