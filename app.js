@@ -5,6 +5,7 @@ const bgImageInput = document.getElementById("bgImageInput");
 const zoomInButton = document.getElementById("zoomInButton");
 const zoomOutButton = document.getElementById("zoomOutButton");
 const resetViewButton = document.getElementById("resetViewButton");
+const CURVE_SAMPLE_COUNT = 250;
 
 const state = {
   order: Number(orderInput.value),
@@ -58,14 +59,20 @@ function setCurveOrder(order) {
   draw();
 }
 
-function setZoom(nextZoom, anchorX = canvas.width / 2, anchorY = canvas.height / 2) {
+function getViewportCenter() {
+  const rect = canvas.getBoundingClientRect();
+  return { x: rect.width / 2, y: rect.height / 2 };
+}
+
+function setZoom(nextZoom, anchorX, anchorY) {
+  const anchor = anchorX == null || anchorY == null ? getViewportCenter() : { x: anchorX, y: anchorY };
   const previousZoom = state.zoom;
   const clampedZoom = clamp(nextZoom, state.minZoom, state.maxZoom);
   if (clampedZoom === previousZoom) {
     return;
   }
-  state.offsetX = anchorX - ((anchorX - state.offsetX) / previousZoom) * clampedZoom;
-  state.offsetY = anchorY - ((anchorY - state.offsetY) / previousZoom) * clampedZoom;
+  state.offsetX = anchor.x - ((anchor.x - state.offsetX) / previousZoom) * clampedZoom;
+  state.offsetY = anchor.y - ((anchor.y - state.offsetY) / previousZoom) * clampedZoom;
   state.zoom = clampedZoom;
   draw();
 }
@@ -113,9 +120,8 @@ function draw() {
   ctx.strokeStyle = "#2b63ff";
   ctx.lineWidth = 2 / state.zoom;
   ctx.beginPath();
-  const samples = 250;
-  for (let i = 0; i <= samples; i += 1) {
-    const t = i / samples;
+  for (let i = 0; i <= CURVE_SAMPLE_COUNT; i += 1) {
+    const t = i / CURVE_SAMPLE_COUNT;
     const point = evaluateBezier(state.points, t);
     if (i === 0) {
       ctx.moveTo(point.x, point.y);
