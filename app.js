@@ -253,38 +253,27 @@ function draw() {
   ctx.stroke();
 
   if (state.points.length > 2) {
-    const tipRadius = 5 / state.zoom;
-    const drawTip = (x, y) => {
+    const drawTangentTip = (x, y, fillColor) => {
       ctx.beginPath();
-      ctx.arc(x, y, tipRadius, 0, Math.PI * 2);
-      ctx.fillStyle = "#f39a1e";
+      ctx.arc(x, y, 5 / state.zoom, 0, Math.PI * 2);
+      ctx.fillStyle = fillColor;
       ctx.fill();
       ctx.lineWidth = 1.5 / state.zoom;
       ctx.strokeStyle = "#1e1f23";
       ctx.stroke();
     };
-    drawTip(state.points[1].x, state.points[1].y);
+    drawTangentTip(state.points[1].x, state.points[1].y, "#f39a1e");
     if (state.points.length > 3) {
-      drawTip(
+      drawTangentTip(
         state.points[state.points.length - 2].x,
         state.points[state.points.length - 2].y,
+        "#f39a1e",
       );
     }
-  }
-
-  if (showMidHandle) {
-    const tipRadius = 5 / state.zoom;
-    const drawMidTip = (x, y) => {
-      ctx.beginPath();
-      ctx.arc(x, y, tipRadius, 0, Math.PI * 2);
-      ctx.fillStyle = "#4c8f3b";
-      ctx.fill();
-      ctx.lineWidth = 1.5 / state.zoom;
-      ctx.strokeStyle = "#1e1f23";
-      ctx.stroke();
-    };
-    drawMidTip(midpointData.tangentStart.x, midpointData.tangentStart.y);
-    drawMidTip(midpointData.tangentEnd.x, midpointData.tangentEnd.y);
+    if (showMidHandle) {
+      drawTangentTip(midpointData.tangentStart.x, midpointData.tangentStart.y, "#4c8f3b");
+      drawTangentTip(midpointData.tangentEnd.x, midpointData.tangentEnd.y, "#4c8f3b");
+    }
   }
 
   [state.points[0], state.points[state.points.length - 1]].forEach((point) => {
