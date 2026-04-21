@@ -17,6 +17,7 @@ const state = {
   offsetX: 0,
   offsetY: 0,
   backgroundImage: null,
+  backgroundImageObjectURL: null,
 };
 
 function clamp(value, min, max) {
@@ -64,11 +65,7 @@ function getViewportCenter() {
   return { x: rect.width / 2, y: rect.height / 2 };
 }
 
-function setZoom(nextZoom, anchorX, anchorY) {
-  const anchor =
-    anchorX === undefined || anchorY === undefined
-      ? getViewportCenter()
-      : { x: anchorX, y: anchorY };
+function setZoom(nextZoom, anchor = getViewportCenter()) {
   const previousZoom = state.zoom;
   const clampedZoom = clamp(nextZoom, state.minZoom, state.maxZoom);
   if (clampedZoom === previousZoom) {
@@ -186,7 +183,7 @@ canvas.addEventListener(
     const rect = canvas.getBoundingClientRect();
     const anchorX = event.clientX - rect.left;
     const anchorY = event.clientY - rect.top;
-    setZoom(state.zoom * zoomFactor, anchorX, anchorY);
+    setZoom(state.zoom * zoomFactor, { x: anchorX, y: anchorY });
   },
   { passive: false },
 );
@@ -205,19 +202,29 @@ resetViewButton.addEventListener("click", () => {
 });
 
 bgImageInput.addEventListener("change", (event) => {
-  const [selectedFile] = event.target.files;
-  if (!selectedFile) {
+  if (state.backgroundImageObjectURL) {
+    URL.revokeObjectURL(state.backgroundImageObjectURL);
+    state.backgroundImageObjectURL = null;
+  }
+
+  const [firstFile] = event.target.files;
+  if (!firstFile) {
     state.backgroundImage = null;
     draw();
     return;
   }
+
+  const objectURL = URL.createObjectURL(firstFile);
+  state.backgroundImageObjectURL = objectURL;
   const image = new Image();
   image.onload = () => {
+    if (state.backgroundImageObjectURL !== objectURL) {
+      return;
+    }
     state.backgroundImage = image;
     draw();
-    URL.revokeObjectURL(image.src);
   };
-  image.src = URL.createObjectURL(selectedFile);
+  image.src = objectURL;
 });
 
 setCurveOrder(state.order);
