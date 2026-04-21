@@ -7,11 +7,13 @@ const zoomOutButton = document.getElementById("zoomOutButton");
 const resetViewButton = document.getElementById("resetViewButton");
 const CURVE_SAMPLE_COUNT = 250;
 const MIDPOINT_T = 0.5;
-const MIDPOINT_TANGENT_HALF_LENGTH = 60;
+const DEFAULT_MIDPOINT_TANGENT_HALF_LENGTH = 60;
+const MIN_MIDPOINT_TANGENT_HALF_LENGTH = 10;
 
 const state = {
   order: Number(orderInput.value),
   points: [],
+  midTangentHalfLength: DEFAULT_MIDPOINT_TANGENT_HALF_LENGTH,
   drag: {
     type: null,
     pointIndex: -1,
@@ -96,15 +98,17 @@ function getMidpointCurveData() {
     y: tangent.y / tangentLength,
   };
 
+  const halfLen = state.midTangentHalfLength;
   return {
     point,
+    unit,
     tangentStart: {
-      x: point.x - unit.x * MIDPOINT_TANGENT_HALF_LENGTH,
-      y: point.y - unit.y * MIDPOINT_TANGENT_HALF_LENGTH,
+      x: point.x - unit.x * halfLen,
+      y: point.y - unit.y * halfLen,
     },
     tangentEnd: {
-      x: point.x + unit.x * MIDPOINT_TANGENT_HALF_LENGTH,
-      y: point.y + unit.y * MIDPOINT_TANGENT_HALF_LENGTH,
+      x: point.x + unit.x * halfLen,
+      y: point.y + unit.y * halfLen,
     },
   };
 }
@@ -170,6 +174,7 @@ function setCurveOrder(order) {
   state.order = clamp(order, 1, 8);
   orderInput.value = String(state.order);
   state.points = createDefaultPoints(state.order);
+  state.midTangentHalfLength = DEFAULT_MIDPOINT_TANGENT_HALF_LENGTH;
   draw();
 }
 
@@ -247,6 +252,41 @@ function draw() {
   }
   ctx.stroke();
 
+  if (state.points.length > 2) {
+    const tipRadius = 5 / state.zoom;
+    const drawTip = (x, y) => {
+      ctx.beginPath();
+      ctx.arc(x, y, tipRadius, 0, Math.PI * 2);
+      ctx.fillStyle = "#f39a1e";
+      ctx.fill();
+      ctx.lineWidth = 1.5 / state.zoom;
+      ctx.strokeStyle = "#1e1f23";
+      ctx.stroke();
+    };
+    drawTip(state.points[1].x, state.points[1].y);
+    if (state.points.length > 3) {
+      drawTip(
+        state.points[state.points.length - 2].x,
+        state.points[state.points.length - 2].y,
+      );
+    }
+  }
+
+  if (showMidHandle) {
+    const tipRadius = 5 / state.zoom;
+    const drawMidTip = (x, y) => {
+      ctx.beginPath();
+      ctx.arc(x, y, tipRadius, 0, Math.PI * 2);
+      ctx.fillStyle = "#4c8f3b";
+      ctx.fill();
+      ctx.lineWidth = 1.5 / state.zoom;
+      ctx.strokeStyle = "#1e1f23";
+      ctx.stroke();
+    };
+    drawMidTip(midpointData.tangentStart.x, midpointData.tangentStart.y);
+    drawMidTip(midpointData.tangentEnd.x, midpointData.tangentEnd.y);
+  }
+
   [state.points[0], state.points[state.points.length - 1]].forEach((point) => {
     ctx.beginPath();
     ctx.arc(point.x, point.y, 7 / state.zoom, 0, Math.PI * 2);
@@ -290,11 +330,35 @@ canvas.addEventListener("pointerdown", (event) => {
       return;
     }
 
+    for (const tip of [midpointData.tangentStart, midpointData.tangentEnd]) {
+      if (Math.hypot(tip.x - position.x, tip.y - position.y) <= hitRadius) {
+        beginDrag("mid-tangent-tip", event);
+        return;
+      }
+    }
+
     if (
       distancePointToSegment(position, midpointData.tangentStart, midpointData.tangentEnd) <=
       hitRadius
     ) {
       beginDrag("middle-tangent", event, { lastPosition: position });
+      return;
+    }
+  }
+
+  if (state.points.length > 2) {
+    if (Math.hypot(state.points[1].x - position.x, state.points[1].y - position.y) <= hitRadius) {
+      beginDrag("control-point", event, { pointIndex: 1 });
+      return;
+    }
+    if (
+      state.points.length > 3 &&
+      Math.hypot(
+        state.points[state.points.length - 2].x - position.x,
+        state.points[state.points.length - 2].y - position.y,
+      ) <= hitRadius
+    ) {
+      beginDrag("control-point", event, { pointIndex: state.points.length - 2 });
       return;
     }
   }
@@ -336,6 +400,12 @@ canvas.addEventListener("pointermove", (event) => {
     if (targetIndex >= 0) {
       dragControlPointByDelta(targetIndex, position);
     }
+  } else if (state.drag.type === "mid-tangent-tip") {
+    const midData = getMidpointCurveData();
+    const dx = position.x - midData.point.x;
+    const dy = position.y - midData.point.y;
+    const proj = dx * midData.unit.x + dy * midData.unit.y;
+    state.midTangentHalfLength = Math.max(MIN_MIDPOINT_TANGENT_HALF_LENGTH, Math.abs(proj));
   }
   draw();
 });
