@@ -14,10 +14,11 @@ Formal math texts may define "order" differently, but this app uses:
 
 1. Render a default 4th-order (degree 4) Bezier curve on a canvas.
 2. Allow curve order customization; control points count is `order + 1`.
-3. Show control points and allow direct manipulation by dragging.
-4. Display tangent guides at the start and end of the curve.
-5. Allow uploading a background image and render it on the same canvas coordinate space.
-6. Support zoom in/out where image and curve scale together.
+3. Show only three visible handles: the start endpoint, the end endpoint, and one on-curve handle at the midpoint of the curve (degree ≥ 2 only). Allow direct drag manipulation of all visible handles.
+4. Display tangent guides at the start and end of the curve. When degree ≥ 2, also display a tangent guide at the on-curve midpoint handle.
+5. Allow dragging of tangent guides to reposition their corresponding curve-shaping control points.
+6. Allow uploading a background image and render it on the same canvas coordinate space.
+7. Support zoom in/out where image and curve scale together.
 
 ## Non-Functional Requirements
 
@@ -33,7 +34,6 @@ Formal math texts may define "order" differently, but this app uses:
   - Background image upload
 - Canvas drawing area for:
   - Background image
-  - Control polygon
-  - Draggable control points
-  - Tangent guides
+  - Three draggable handles: start endpoint, end endpoint, on-curve midpoint (degree ≥ 2)
+  - Tangent guides at start/end (always) and midpoint (degree ≥ 2), all draggable
   - Bezier curve

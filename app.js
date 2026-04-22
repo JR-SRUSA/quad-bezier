@@ -1,16 +1,29 @@
 const canvas = document.getElementById("bezierCanvas");
 const ctx = canvas.getContext("2d");
+const deriv1Canvas = document.getElementById("deriv1Canvas");
+const deriv1Ctx = deriv1Canvas.getContext("2d");
+const deriv2Canvas = document.getElementById("deriv2Canvas");
+const deriv2Ctx = deriv2Canvas.getContext("2d");
 const orderInput = document.getElementById("orderInput");
 const bgImageInput = document.getElementById("bgImageInput");
 const zoomInButton = document.getElementById("zoomInButton");
 const zoomOutButton = document.getElementById("zoomOutButton");
 const resetViewButton = document.getElementById("resetViewButton");
 const CURVE_SAMPLE_COUNT = 250;
+const MIDPOINT_T = 0.5;
 
 const state = {
   order: Number(orderInput.value),
   points: [],
-  draggingPointIndex: -1,
+  drag: {
+    type: null,
+    pointIndex: -1,
+    pointerId: null,
+    lastPosition: null,
+    // Snapshot of the yellow midpoint position taken at drag-start for mid-tangent-handle drags.
+    // Used by the constrained quintic solve to keep the midpoint fixed while the handle moves.
+    startYellow: null,
+  },
   zoom: 1,
   minZoom: 0.25,
   maxZoom: 6,
@@ -26,8 +39,10 @@ function clamp(value, min, max) {
 
 function toWorldCoordinates(clientX, clientY) {
   const rect = canvas.getBoundingClientRect();
-  const x = (clientX - rect.left - state.offsetX) / state.zoom;
-  const y = (clientY - rect.top - state.offsetY) / state.zoom;
+  const scaleX = canvas.width / rect.width;
+  const scaleY = canvas.height / rect.height;
+  const x = ((clientX - rect.left) * scaleX - state.offsetX) / state.zoom;
+  const y = ((clientY - rect.top) * scaleY - state.offsetY) / state.zoom;
   return { x, y };
 }
 
@@ -53,6 +68,198 @@ function evaluateBezier(points, t) {
   return work[0];
 }
 
+function evaluateBezierDerivative(points, t) {
+  const degree = points.length - 1;
+  if (degree <= 0) {
+    return { x: 0, y: 0 };
+  }
+  const derivativePoints = Array.from({ length: degree }, (_, i) => ({
+    x: degree * (points[i + 1].x - points[i].x),
+    y: degree * (points[i + 1].y - points[i].y),
+  }));
+  return evaluateBezier(derivativePoints, t);
+}
+
+function evaluateBezierSecondDerivative(points, t) {
+  const degree = points.length - 1;
+  if (degree <= 1) {
+    return { x: 0, y: 0 };
+  }
+  const d1Points = Array.from({ length: degree }, (_, i) => ({
+    x: degree * (points[i + 1].x - points[i].x),
+    y: degree * (points[i + 1].y - points[i].y),
+  }));
+  const deg1 = d1Points.length - 1;
+  if (deg1 <= 0) {
+    return { x: 0, y: 0 };
+  }
+  const d2Points = Array.from({ length: deg1 }, (_, i) => ({
+    x: deg1 * (d1Points[i + 1].x - d1Points[i].x),
+    y: deg1 * (d1Points[i + 1].y - d1Points[i].y),
+  }));
+  return evaluateBezier(d2Points, t);
+}
+
+function binomial(n, k) {
+  if (k < 0 || k > n) return 0;
+  if (k === 0 || k === n) return 1;
+  // Compute via the multiplicative formula C(n,k) = n*(n-1)*...*(n-k+1) / k!
+  // Each step divides an integer product, so intermediate values stay exact integers.
+  let result = 1;
+  for (let i = 0; i < k; i += 1) {
+    result = (result * (n - i)) / (i + 1);
+  }
+  return result;
+}
+
+// Returns the two de Casteljau level-(degree-1) points at t=0.5 for degree >= 4.
+// These are P_{0,d-1} (left) and P_{1,d-1} (right), which together define the
+// tangent direction and position at the curve midpoint.
+// For degree 3 (cubic) this is intentionally omitted: the existing orange handles P1 and P2
+// already give direct control over the full curve, so extra de Casteljau handles would
+// be redundant and confusing. Returns null for degree < 4.
+function getDeCasteljauTangentHandles() {
+  const d = state.points.length - 1;
+  if (d < 4) return null;
+  const scale = Math.pow(2, d - 1);
+  let lx = 0, ly = 0, rx = 0, ry = 0;
+  for (let k = 0; k < d; k += 1) {
+    const c = binomial(d - 1, k);
+    lx += c * state.points[k].x;
+    ly += c * state.points[k].y;
+    rx += c * state.points[k + 1].x;
+    ry += c * state.points[k + 1].y;
+  }
+  return {
+    left: { x: lx / scale, y: ly / scale },
+    right: { x: rx / scale, y: ry / scale },
+  };
+}
+
+// Given a dragged position for the left (isLeft=true) or right (isLeft=false) de Casteljau
+// tangent handle, back-solves for the middle control point and updates state.points.
+// Left handle → solves for P_{floor(d/2)}; right handle → solves for P_{ceil(d/2)}.
+function solveMiddleControlFromHandle(isLeft, handlePos) {
+  const points = state.points;
+  const d = points.length - 1;
+  const scale = Math.pow(2, d - 1);
+  const m = isLeft ? Math.floor(d / 2) : Math.ceil(d / 2);
+  let sumX = 0, sumY = 0, coeffM;
+  if (isLeft) {
+    // P_{0,d-1} = (1/scale) * sum_{k=0}^{d-1} C(d-1,k) * P_k
+    coeffM = binomial(d - 1, m);
+    for (let k = 0; k < d; k += 1) {
+      if (k === m) continue;
+      const c = binomial(d - 1, k);
+      sumX += c * points[k].x;
+      sumY += c * points[k].y;
+    }
+  } else {
+    // P_{1,d-1} = (1/scale) * sum_{k=0}^{d-1} C(d-1,k) * P_{k+1}
+    // Coefficient of P_m is C(d-1, m-1)
+    coeffM = binomial(d - 1, m - 1);
+    for (let k = 0; k < d; k += 1) {
+      if (k === m - 1) continue;
+      const c = binomial(d - 1, k);
+      sumX += c * points[k + 1].x;
+      sumY += c * points[k + 1].y;
+    }
+  }
+  // coeffM is always positive for d >= 4 (binomial coefficient in the interior of Pascal's triangle).
+  if (coeffM === 0) return;
+  points[m] = {
+    x: (scale * handlePos.x - sumX) / coeffM,
+    y: (scale * handlePos.y - sumY) / coeffM,
+  };
+}
+
+// Constrained solve for quintic (d=5) only.
+// Given the dragged handle position and the yellow midpoint position that must stay fixed,
+// mirrors the opposite handle through yellow (newRight = 2*yellow - newLeft) and solves
+// for both P[2] and P[3] simultaneously from the two resulting linear equations:
+//   P_{0,4}(t=0.5) = newLeft  →  6·P2 + 4·P3 = 16·newLeft - P0 - 4·P1 - P4
+//   P_{1,4}(t=0.5) = newRight →  4·P2 + 6·P3 = 16·newRight - P1 - 4·P4 - P5
+// This guarantees yellow = (newLeft + newRight) / 2 = fixedYellow throughout the drag.
+function solveMiddleControlsConstrained(isLeft, handlePos, fixedYellow) {
+  const points = state.points;
+  const d = points.length - 1;
+  if (d !== 5) return;
+  const scale = Math.pow(2, d - 1); // 16
+  const newLeft = isLeft
+    ? handlePos
+    : { x: 2 * fixedYellow.x - handlePos.x, y: 2 * fixedYellow.y - handlePos.y };
+  const newRight = isLeft
+    ? { x: 2 * fixedYellow.x - handlePos.x, y: 2 * fixedYellow.y - handlePos.y }
+    : handlePos;
+  // lv = scale·newLeft - (P0 + 4·P1 + P4)
+  const lvx = scale * newLeft.x - points[0].x - 4 * points[1].x - points[4].x;
+  const lvy = scale * newLeft.y - points[0].y - 4 * points[1].y - points[4].y;
+  // rv = scale·newRight - (P1 + 4·P4 + P5)
+  const rvx = scale * newRight.x - points[1].x - 4 * points[4].x - points[5].x;
+  const rvy = scale * newRight.y - points[1].y - 4 * points[4].y - points[5].y;
+  points[2] = { x: (3 * lvx - 2 * rvx) / 10, y: (3 * lvy - 2 * rvy) / 10 };
+  points[3] = { x: (3 * rvx - 2 * lvx) / 10, y: (3 * rvy - 2 * lvy) / 10 };
+}
+
+function distancePointToSegment(point, start, end) {
+  const segmentX = end.x - start.x;
+  const segmentY = end.y - start.y;
+  const segmentLengthSquared = segmentX * segmentX + segmentY * segmentY;
+  if (segmentLengthSquared === 0) {
+    return Math.hypot(point.x - start.x, point.y - start.y);
+  }
+  const t = clamp(
+    ((point.x - start.x) * segmentX + (point.y - start.y) * segmentY) / segmentLengthSquared,
+    0,
+    1,
+  );
+  const projected = {
+    x: start.x + segmentX * t,
+    y: start.y + segmentY * t,
+  };
+  return Math.hypot(point.x - projected.x, point.y - projected.y);
+}
+
+function getMiddleControlTargetIndex() {
+  if (state.points.length <= 2) {
+    return -1;
+  }
+  return Math.floor(state.points.length / 2);
+}
+
+function beginDrag(type, event, options = {}) {
+  state.drag.type = type;
+  state.drag.pointIndex = options.pointIndex ?? -1;
+  state.drag.pointerId = event.pointerId;
+  state.drag.lastPosition = options.lastPosition ?? null;
+  state.drag.startYellow = options.startYellow ?? null;
+  canvas.setPointerCapture(event.pointerId);
+}
+
+function dragControlPointByDelta(pointIndex, position) {
+  if (pointIndex < 0 || pointIndex >= state.points.length || !state.drag.lastPosition) {
+    return;
+  }
+  const deltaX = position.x - state.drag.lastPosition.x;
+  const deltaY = position.y - state.drag.lastPosition.y;
+  state.points[pointIndex] = {
+    x: state.points[pointIndex].x + deltaX,
+    y: state.points[pointIndex].y + deltaY,
+  };
+  state.drag.lastPosition = position;
+}
+
+function clearDrag(event) {
+  if (state.drag.pointerId !== null && event) {
+    canvas.releasePointerCapture(event.pointerId);
+  }
+  state.drag.type = null;
+  state.drag.pointIndex = -1;
+  state.drag.pointerId = null;
+  state.drag.lastPosition = null;
+  state.drag.startYellow = null;
+}
+
 function setCurveOrder(order) {
   state.order = clamp(order, 1, 8);
   orderInput.value = String(state.order);
@@ -64,6 +271,184 @@ function getViewportCenter() {
   const rect = canvas.getBoundingClientRect();
   return { x: rect.width / 2, y: rect.height / 2 };
 }
+
+// Rounds maxAbs up to a "nice" number (1, 2, or 5 times a power of ten) for y-axis scaling.
+function niceYMax(maxAbs) {
+  if (maxAbs === 0) return 1;
+  const magnitude = Math.pow(10, Math.floor(Math.log10(maxAbs)));
+  const normalized = maxAbs / magnitude;
+  const nice = normalized <= 1 ? 1 : normalized <= 2 ? 2 : normalized <= 5 ? 5 : 10;
+  return nice * magnitude;
+}
+
+function formatAxisValue(v) {
+  if (v === 0) return "0";
+  const abs = Math.abs(v);
+  if (abs >= 10000 || abs < 0.01) return v.toExponential(1);
+  if (abs >= 1000) return v.toFixed(0);
+  if (abs >= 100) return v.toFixed(1);
+  if (abs >= 10) return v.toFixed(2);
+  return v.toFixed(3);
+}
+
+// Samples the first and second derivatives at CURVE_SAMPLE_COUNT+1 evenly-spaced t values.
+// Arc length (chord-length approximation) is accumulated and used as the x-axis for both graphs.
+// Returns { samples1, samples2, totalArcLength } where each sample is { s, x, y }.
+function buildDerivativeSamples() {
+  if (state.points.length < 2) {
+    return { samples1: [], samples2: [], totalArcLength: 0 };
+  }
+  const n = CURVE_SAMPLE_COUNT;
+  const samples1 = [];
+  const samples2 = [];
+  let arcLen = 0;
+  let prevPoint = evaluateBezier(state.points, 0);
+  for (let i = 0; i <= n; i += 1) {
+    const t = i / n;
+    const point = evaluateBezier(state.points, t);
+    if (i > 0) {
+      arcLen += Math.hypot(point.x - prevPoint.x, point.y - prevPoint.y);
+    }
+    prevPoint = point;
+    const d1 = evaluateBezierDerivative(state.points, t);
+    const d2 = evaluateBezierSecondDerivative(state.points, t);
+    samples1.push({ s: arcLen, x: d1.x, y: d1.y });
+    samples2.push({ s: arcLen, x: d2.x, y: d2.y });
+  }
+  return { samples1, samples2, totalArcLength: arcLen };
+}
+
+const DERIV_GRAPH_PADDING = { left: 62, right: 20, top: 30, bottom: 38 };
+
+// Draws a derivative graph (x- and y-components as separate colored lines) onto a canvas.
+// Horizontal axis: arc length (0–100% of total). Vertical axis: auto-scaled to data range.
+function drawDerivativeGraph(cvs, dctx, title, samples, totalArcLength) {
+  const W = cvs.width;
+  const H = cvs.height;
+  const { left: PL, right: PR, top: PT, bottom: PB } = DERIV_GRAPH_PADDING;
+  const plotW = W - PL - PR;
+  const plotH = H - PT - PB;
+
+  dctx.setTransform(1, 0, 0, 1, 0, 0);
+  dctx.clearRect(0, 0, W, H);
+  dctx.fillStyle = "#ffffff";
+  dctx.fillRect(0, 0, W, H);
+
+  if (samples.length === 0 || totalArcLength === 0) return;
+
+  let maxAbs = 0;
+  for (const sample of samples) {
+    maxAbs = Math.max(maxAbs, Math.abs(sample.x), Math.abs(sample.y));
+  }
+  const yMax = niceYMax(maxAbs);
+
+  const toPlotX = (s) => PL + (s / totalArcLength) * plotW;
+  const toPlotY = (v) => PT + plotH / 2 - (v / yMax) * (plotH / 2);
+
+  // Horizontal grid lines at ±100%, ±50%, and zero
+  dctx.lineWidth = 1;
+  for (const frac of [-1, -0.5, 0.5, 1]) {
+    dctx.strokeStyle = "#eceef4";
+    dctx.beginPath();
+    dctx.moveTo(PL, toPlotY(frac * yMax));
+    dctx.lineTo(PL + plotW, toPlotY(frac * yMax));
+    dctx.stroke();
+  }
+  dctx.strokeStyle = "#c8ccd8";
+  dctx.beginPath();
+  dctx.moveTo(PL, toPlotY(0));
+  dctx.lineTo(PL + plotW, toPlotY(0));
+  dctx.stroke();
+
+  // Y axis labels
+  dctx.fillStyle = "#666b7a";
+  dctx.font = "11px Arial";
+  dctx.textAlign = "right";
+  dctx.textBaseline = "middle";
+  for (const frac of [-1, -0.5, 0, 0.5, 1]) {
+    dctx.fillText(formatAxisValue(frac * yMax), PL - 5, toPlotY(frac * yMax));
+  }
+
+  // X axis tick marks and percentage labels
+  const xAxisBottom = PT + plotH;
+  dctx.font = "11px Arial";
+  dctx.textAlign = "center";
+  dctx.textBaseline = "top";
+  for (const frac of [0, 0.25, 0.5, 0.75, 1]) {
+    const x = PL + frac * plotW;
+    dctx.strokeStyle = "#c8ccd8";
+    dctx.lineWidth = 1;
+    dctx.beginPath();
+    dctx.moveTo(x, xAxisBottom);
+    dctx.lineTo(x, xAxisBottom + 4);
+    dctx.stroke();
+    dctx.fillStyle = "#666b7a";
+    dctx.fillText(`${(frac * 100) | 0}%`, x, xAxisBottom + 5);
+  }
+
+  // X axis description
+  dctx.fillStyle = "#888fa0";
+  dctx.textBaseline = "bottom";
+  dctx.fillText("arc length", PL + plotW / 2, H - 2);
+
+  // Plot border
+  dctx.strokeStyle = "#b0b5c4";
+  dctx.lineWidth = 1;
+  dctx.strokeRect(PL, PT, plotW, plotH);
+
+  // Clip lines to the plot area
+  dctx.save();
+  dctx.beginPath();
+  dctx.rect(PL, PT, plotW, plotH);
+  dctx.clip();
+
+  dctx.lineWidth = 1.5;
+
+  dctx.strokeStyle = "#2b63ff";
+  dctx.beginPath();
+  for (let i = 0; i < samples.length; i += 1) {
+    const px = toPlotX(samples[i].s);
+    const py = toPlotY(samples[i].x);
+    if (i === 0) dctx.moveTo(px, py);
+    else dctx.lineTo(px, py);
+  }
+  dctx.stroke();
+
+  dctx.strokeStyle = "#e05252";
+  dctx.beginPath();
+  for (let i = 0; i < samples.length; i += 1) {
+    const px = toPlotX(samples[i].s);
+    const py = toPlotY(samples[i].y);
+    if (i === 0) dctx.moveTo(px, py);
+    else dctx.lineTo(px, py);
+  }
+  dctx.stroke();
+
+  dctx.restore();
+
+  // Title
+  dctx.fillStyle = "#1e1f23";
+  dctx.font = "bold 12px Arial";
+  dctx.textAlign = "left";
+  dctx.textBaseline = "top";
+  dctx.fillText(title, PL, 7);
+
+  // Legend (top-right inside plot area)
+  const lgX = PL + plotW - 4;
+  const lgY = PT + 8;
+  dctx.fillStyle = "#2b63ff";
+  dctx.fillRect(lgX - 46, lgY + 2, 14, 2);
+  dctx.fillStyle = "#555966";
+  dctx.font = "11px Arial";
+  dctx.textAlign = "left";
+  dctx.textBaseline = "middle";
+  dctx.fillText("x", lgX - 30, lgY + 3);
+  dctx.fillStyle = "#e05252";
+  dctx.fillRect(lgX - 46, lgY + 17, 14, 2);
+  dctx.fillStyle = "#555966";
+  dctx.fillText("y", lgX - 30, lgY + 18);
+}
+
 
 function setZoom(nextZoom, anchor = getViewportCenter()) {
   const previousZoom = state.zoom;
@@ -87,20 +472,9 @@ function draw() {
     ctx.drawImage(state.backgroundImage, 0, 0);
   }
 
-  ctx.lineWidth = 1 / state.zoom;
-  ctx.strokeStyle = "#8a93a3";
-  ctx.beginPath();
-  state.points.forEach((point, index) => {
-    if (index === 0) {
-      ctx.moveTo(point.x, point.y);
-    } else {
-      ctx.lineTo(point.x, point.y);
-    }
-  });
-  ctx.stroke();
-
   if (state.points.length > 1) {
     ctx.strokeStyle = "#f39a1e";
+    ctx.lineWidth = 1 / state.zoom;
     ctx.setLineDash([8 / state.zoom, 6 / state.zoom]);
     ctx.beginPath();
     ctx.moveTo(state.points[0].x, state.points[0].y);
@@ -113,6 +487,20 @@ function draw() {
       state.points[state.points.length - 2].x,
       state.points[state.points.length - 2].y,
     );
+    ctx.stroke();
+    ctx.setLineDash([]);
+  }
+
+  const showMidHandle = state.points.length > 2;
+  const handles = getDeCasteljauTangentHandles();
+
+  if (handles) {
+    ctx.strokeStyle = "#4c8f3b";
+    ctx.lineWidth = 1 / state.zoom;
+    ctx.setLineDash([8 / state.zoom, 6 / state.zoom]);
+    ctx.beginPath();
+    ctx.moveTo(handles.left.x, handles.left.y);
+    ctx.lineTo(handles.right.x, handles.right.y);
     ctx.stroke();
     ctx.setLineDash([]);
   }
@@ -131,7 +519,31 @@ function draw() {
   }
   ctx.stroke();
 
-  state.points.forEach((point) => {
+  if (state.points.length > 2) {
+    const drawTangentTip = (x, y, fillColor) => {
+      ctx.beginPath();
+      ctx.arc(x, y, 5 / state.zoom, 0, Math.PI * 2);
+      ctx.fillStyle = fillColor;
+      ctx.fill();
+      ctx.lineWidth = 1.5 / state.zoom;
+      ctx.strokeStyle = "#1e1f23";
+      ctx.stroke();
+    };
+    drawTangentTip(state.points[1].x, state.points[1].y, "#f39a1e");
+    if (state.points.length > 3) {
+      drawTangentTip(
+        state.points[state.points.length - 2].x,
+        state.points[state.points.length - 2].y,
+        "#f39a1e",
+      );
+    }
+    if (handles) {
+      drawTangentTip(handles.left.x, handles.left.y, "#4c8f3b");
+      drawTangentTip(handles.right.x, handles.right.y, "#4c8f3b");
+    }
+  }
+
+  [state.points[0], state.points[state.points.length - 1]].forEach((point) => {
     ctx.beginPath();
     ctx.arc(point.x, point.y, 7 / state.zoom, 0, Math.PI * 2);
     ctx.fillStyle = "#ffffff";
@@ -140,39 +552,151 @@ function draw() {
     ctx.strokeStyle = "#1e1f23";
     ctx.stroke();
   });
+
+  if (showMidHandle) {
+    const midpoint = evaluateBezier(state.points, MIDPOINT_T);
+    ctx.beginPath();
+    ctx.arc(midpoint.x, midpoint.y, 6 / state.zoom, 0, Math.PI * 2);
+    ctx.fillStyle = "#ffec9a";
+    ctx.fill();
+    ctx.lineWidth = 2 / state.zoom;
+    ctx.strokeStyle = "#5a4a0a";
+    ctx.stroke();
+  }
+
+  const { samples1, samples2, totalArcLength } = buildDerivativeSamples();
+  drawDerivativeGraph(
+    deriv1Canvas, deriv1Ctx,
+    "1st Derivative (dx/dt, dy/dt)",
+    samples1, totalArcLength,
+  );
+  drawDerivativeGraph(
+    deriv2Canvas, deriv2Ctx,
+    "2nd Derivative (d\u00B2x/dt\u00B2, d\u00B2y/dt\u00B2)",
+    samples2, totalArcLength,
+  );
 }
 
 canvas.addEventListener("pointerdown", (event) => {
   const position = toWorldCoordinates(event.clientX, event.clientY);
   const hitRadius = 10 / state.zoom;
-  for (let i = state.points.length - 1; i >= 0; i -= 1) {
+
+  const endpointIndices = [0, state.points.length - 1];
+  for (const i of endpointIndices) {
     const point = state.points[i];
     if (Math.hypot(point.x - position.x, point.y - position.y) <= hitRadius) {
-      state.draggingPointIndex = i;
-      canvas.setPointerCapture(event.pointerId);
+      beginDrag("control-point", event, { pointIndex: i });
       return;
+    }
+  }
+
+  const showMidHandle = state.points.length > 2;
+
+  if (showMidHandle) {
+    const handles = getDeCasteljauTangentHandles();
+    if (handles) {
+      if (Math.hypot(handles.left.x - position.x, handles.left.y - position.y) <= hitRadius) {
+        beginDrag("mid-tangent-handle", event, {
+          pointIndex: 0,
+          startYellow: evaluateBezier(state.points, MIDPOINT_T),
+        });
+        return;
+      }
+      if (Math.hypot(handles.right.x - position.x, handles.right.y - position.y) <= hitRadius) {
+        beginDrag("mid-tangent-handle", event, {
+          pointIndex: 1,
+          startYellow: evaluateBezier(state.points, MIDPOINT_T),
+        });
+        return;
+      }
+    }
+
+    const midpoint = evaluateBezier(state.points, MIDPOINT_T);
+    if (Math.hypot(midpoint.x - position.x, midpoint.y - position.y) <= hitRadius) {
+      beginDrag("middle-control", event, { lastPosition: position });
+      return;
+    }
+
+    if (handles && distancePointToSegment(position, handles.left, handles.right) <= hitRadius) {
+      beginDrag("middle-tangent", event, { lastPosition: position });
+      return;
+    }
+  }
+
+  if (state.points.length > 2) {
+    if (Math.hypot(state.points[1].x - position.x, state.points[1].y - position.y) <= hitRadius) {
+      beginDrag("control-point", event, { pointIndex: 1 });
+      return;
+    }
+    if (
+      state.points.length > 3 &&
+      Math.hypot(
+        state.points[state.points.length - 2].x - position.x,
+        state.points[state.points.length - 2].y - position.y,
+      ) <= hitRadius
+    ) {
+      beginDrag("control-point", event, { pointIndex: state.points.length - 2 });
+      return;
+    }
+  }
+
+  if (state.points.length > 1) {
+    if (distancePointToSegment(position, state.points[0], state.points[1]) <= hitRadius) {
+      beginDrag("start-tangent", event, { lastPosition: position });
+      return;
+    }
+
+    const lastIndex = state.points.length - 1;
+    if (
+      distancePointToSegment(position, state.points[lastIndex], state.points[lastIndex - 1]) <=
+      hitRadius
+    ) {
+      beginDrag("end-tangent", event, { lastPosition: position });
     }
   }
 });
 
 canvas.addEventListener("pointermove", (event) => {
-  if (state.draggingPointIndex < 0) {
+  if (!state.drag.type) {
     return;
   }
   const position = toWorldCoordinates(event.clientX, event.clientY);
-  state.points[state.draggingPointIndex] = position;
+  if (state.drag.type === "control-point" && state.drag.pointIndex >= 0) {
+    state.points[state.drag.pointIndex] = position;
+  } else if (state.drag.type === "middle-control" && state.drag.lastPosition) {
+    const targetIndex = getMiddleControlTargetIndex();
+    if (targetIndex >= 0) {
+      dragControlPointByDelta(targetIndex, position);
+    }
+  } else if (state.drag.type === "start-tangent" && state.points.length > 1) {
+    dragControlPointByDelta(1, position);
+  } else if (state.drag.type === "end-tangent" && state.points.length > 1) {
+    dragControlPointByDelta(state.points.length - 2, position);
+  } else if (state.drag.type === "middle-tangent" && state.drag.lastPosition) {
+    const targetIndex = getMiddleControlTargetIndex();
+    if (targetIndex >= 0) {
+      dragControlPointByDelta(targetIndex, position);
+    }
+  } else if (state.drag.type === "mid-tangent-handle") {
+    const d = state.points.length - 1;
+    if (d === 5 && state.drag.startYellow) {
+      // For quintic: mirror the opposite handle through the fixed yellow dot so the midpoint
+      // stays stationary while the dragged handle rotates or stretches the tangent.
+      solveMiddleControlsConstrained(state.drag.pointIndex === 0, position, state.drag.startYellow);
+    } else {
+      // For other degrees: back-solve for the single middle control point (yellow will move).
+      solveMiddleControlFromHandle(state.drag.pointIndex === 0, position);
+    }
+  }
   draw();
 });
 
 canvas.addEventListener("pointerup", (event) => {
-  if (state.draggingPointIndex >= 0) {
-    canvas.releasePointerCapture(event.pointerId);
-  }
-  state.draggingPointIndex = -1;
+  clearDrag(event);
 });
 
-canvas.addEventListener("pointercancel", () => {
-  state.draggingPointIndex = -1;
+canvas.addEventListener("pointercancel", (event) => {
+  clearDrag(event);
 });
 
 canvas.addEventListener(
