@@ -14,6 +14,7 @@ const state = {
   order: Number(orderInput.value),
   points: [],
   midTangentHalfLength: DEFAULT_MIDPOINT_TANGENT_HALF_LENGTH,
+  midTangentOverrideAngle: null,
   drag: {
     type: null,
     pointIndex: -1,
@@ -93,10 +94,10 @@ function getMidpointCurveData() {
     tangentLength = 1;
   }
 
-  const unit = {
-    x: tangent.x / tangentLength,
-    y: tangent.y / tangentLength,
-  };
+  const unit =
+    state.midTangentOverrideAngle !== null
+      ? { x: Math.cos(state.midTangentOverrideAngle), y: Math.sin(state.midTangentOverrideAngle) }
+      : { x: tangent.x / tangentLength, y: tangent.y / tangentLength };
 
   const halfLen = state.midTangentHalfLength;
   return {
@@ -175,6 +176,7 @@ function setCurveOrder(order) {
   orderInput.value = String(state.order);
   state.points = createDefaultPoints(state.order);
   state.midTangentHalfLength = DEFAULT_MIDPOINT_TANGENT_HALF_LENGTH;
+  state.midTangentOverrideAngle = null;
   draw();
 }
 
@@ -319,9 +321,10 @@ canvas.addEventListener("pointerdown", (event) => {
       return;
     }
 
-    for (const tip of [midpointData.tangentStart, midpointData.tangentEnd]) {
-      if (Math.hypot(tip.x - position.x, tip.y - position.y) <= hitRadius) {
-        beginDrag("mid-tangent-tip", event);
+    const tips = [midpointData.tangentStart, midpointData.tangentEnd];
+    for (let tipIdx = 0; tipIdx < tips.length; tipIdx += 1) {
+      if (Math.hypot(tips[tipIdx].x - position.x, tips[tipIdx].y - position.y) <= hitRadius) {
+        beginDrag("mid-tangent-tip", event, { pointIndex: tipIdx });
         return;
       }
     }
@@ -393,8 +396,13 @@ canvas.addEventListener("pointermove", (event) => {
     const midData = getMidpointCurveData();
     const dx = position.x - midData.point.x;
     const dy = position.y - midData.point.y;
-    const proj = dx * midData.unit.x + dy * midData.unit.y;
-    state.midTangentHalfLength = Math.max(MIN_MIDPOINT_TANGENT_HALF_LENGTH, Math.abs(proj));
+    const dist = Math.hypot(dx, dy);
+    if (dist >= MIN_MIDPOINT_TANGENT_HALF_LENGTH) {
+      const angle = Math.atan2(dy, dx);
+      // tangentStart is in the opposite direction (index 0), so flip the angle
+      state.midTangentOverrideAngle = state.drag.pointIndex === 0 ? angle + Math.PI : angle;
+      state.midTangentHalfLength = dist;
+    }
   }
   draw();
 });
