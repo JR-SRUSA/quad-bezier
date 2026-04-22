@@ -18,12 +18,17 @@
 
         <label for="bgImageInput">Background image</label>
         <input id="bgImageInput" type="file" accept="image/*" />
+
+        <label for="middleTInput">Middle point parameter (t)</label>
+        <input id="middleTInput" type="range" min="0.05" max="0.95" step="0.01" value="0.5" />
+        <output id="middleTValue" for="middleTInput">0.50</output>
+        <span id="minRadiusInfo" class="metric-text">Minimum radius: --</span>
       </section>
 
       <canvas id="bezierCanvas" width="1000" height="650" aria-label="Bezier editor canvas"></canvas>
       <div class="derivative-row">
         <canvas id="deriv1Canvas" width="1000" height="300" class="derivative-canvas" aria-label="Tangent angle graph"></canvas>
-        <canvas id="deriv2Canvas" width="1000" height="300" class="derivative-canvas" aria-label="Curvature graph"></canvas>
+        <canvas id="deriv2Canvas" width="1000" height="300" class="derivative-canvas" aria-label="Radius of curvature graph"></canvas>
       </div>
     </main>
 

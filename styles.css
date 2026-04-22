@@ -31,6 +31,15 @@ body {
   width: 4rem;
 }
 
+.controls input[type="range"] {
+  width: 10rem;
+}
+
+.metric-text {
+  color: #384053;
+  font-size: 0.92rem;
+}
+
 #bezierCanvas {
   display: block;
   width: 100%;
