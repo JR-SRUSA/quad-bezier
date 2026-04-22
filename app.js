@@ -15,7 +15,7 @@ const resetViewButton = document.getElementById("resetViewButton");
 const CURVE_SAMPLE_COUNT = 250;
 const DEFAULT_MIDDLE_T = 0.5;
 const MIN_SPEED_SQ_THRESHOLD = 1e-10;
-const MIN_CURVATURE_THRESHOLD = 1e-7;
+const MIN_CURVATURE_MAG_THRESHOLD = 1e-7;
 
 const state = {
   order: Number(orderInput.value),
@@ -356,7 +356,7 @@ function buildDerivativeSamples() {
     const speed2 = d1.x * d1.x + d1.y * d1.y;
     const angle = speed2 < MIN_SPEED_SQ_THRESHOLD ? 0 : Math.atan2(d1.y, d1.x) * (180 / Math.PI);
     const curvature = speed2 < MIN_SPEED_SQ_THRESHOLD ? 0 : (d1.x * d2.y - d1.y * d2.x) / Math.pow(speed2, 1.5);
-    const radius = Math.abs(curvature) < MIN_CURVATURE_THRESHOLD ? null : 1 / Math.abs(curvature);
+    const radius = Math.abs(curvature) < MIN_CURVATURE_MAG_THRESHOLD ? null : 1 / Math.abs(curvature);
     samplesAngle.push({ s: arcLen, v: angle });
     samplesRadius.push({ s: arcLen, v: radius });
     if (radius !== null && (!minRadiusSample || radius < minRadiusSample.v)) {
