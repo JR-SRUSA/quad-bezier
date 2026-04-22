@@ -14,6 +14,7 @@ const state = {
   order: Number(orderInput.value),
   points: [],
   midTangentHalfLength: DEFAULT_MIDPOINT_TANGENT_HALF_LENGTH,
+  // Override angle in radians for the midpoint tangent indicator; null means use the computed curve tangent direction.
   midTangentOverrideAngle: null,
   drag: {
     type: null,
@@ -397,12 +398,10 @@ canvas.addEventListener("pointermove", (event) => {
     const dx = position.x - midData.point.x;
     const dy = position.y - midData.point.y;
     const dist = Math.hypot(dx, dy);
-    if (dist >= MIN_MIDPOINT_TANGENT_HALF_LENGTH) {
-      const angle = Math.atan2(dy, dx);
-      // tangentStart is in the opposite direction (index 0), so flip the angle
-      state.midTangentOverrideAngle = state.drag.pointIndex === 0 ? angle + Math.PI : angle;
-      state.midTangentHalfLength = dist;
-    }
+    const angle = Math.atan2(dy, dx);
+    // tangentStart points in the negative direction (index 0), so flip the angle
+    state.midTangentOverrideAngle = state.drag.pointIndex === 0 ? angle + Math.PI : angle;
+    state.midTangentHalfLength = Math.max(MIN_MIDPOINT_TANGENT_HALF_LENGTH, dist);
   }
   draw();
 });
