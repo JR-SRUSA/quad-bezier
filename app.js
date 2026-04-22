@@ -16,7 +16,6 @@ const CURVE_SAMPLE_COUNT = 250;
 const DEFAULT_MIDDLE_T = 0.5;
 const MIN_SPEED_SQ_THRESHOLD = 1e-10;
 const MIN_CURVATURE_MAG_THRESHOLD = 1e-7;
-const MAX_RADIUS_FOR_PLOT = 5000;
 const MIN_DETERMINANT_THRESHOLD = 1e-12;
 
 const state = {
@@ -363,7 +362,7 @@ function buildDerivativeSamples() {
     const absCurvature = Math.abs(curvature);
     const radius = absCurvature < MIN_CURVATURE_MAG_THRESHOLD
       ? null
-      : Math.min(1 / absCurvature, MAX_RADIUS_FOR_PLOT);
+      : 1 / absCurvature;
     samplesAngle.push({ s: arcLen, v: angle });
     samplesRadius.push({ s: arcLen, v: radius });
     if (radius !== null && (!minRadiusSample || radius < minRadiusSample.v)) {
@@ -380,6 +379,7 @@ const DERIV_GRAPH_PADDING = { left: 62, right: 20, top: 30, bottom: 38 };
 // samples: array of { s, v } where v is the scalar value at arc-length s.
 function drawDerivativeGraph(cvs, dctx, title, lineColor, samples, totalArcLength, options = {}) {
   const centered = options.centered === true;
+  const markerLines = options.markerLines ?? [];
   const W = cvs.width;
   const H = cvs.height;
   const { left: PL, right: PR, top: PT, bottom: PB } = DERIV_GRAPH_PADDING;
@@ -397,8 +397,19 @@ function drawDerivativeGraph(cvs, dctx, title, lineColor, samples, totalArcLengt
   if (finiteValueSamples.length === 0) return;
 
   let yDataMax = 0;
+  let yDataMin = Infinity;
   for (const sample of finiteValueSamples) {
-    yDataMax = Math.max(yDataMax, centered ? Math.abs(sample.v) : sample.v);
+    const val = centered ? Math.abs(sample.v) : sample.v;
+    yDataMax = Math.max(yDataMax, val);
+    if (!centered) yDataMin = Math.min(yDataMin, val);
+  }
+  // For non-centered (positive-only) data such as radius: cap the display range at a fixed
+  // multiple of the minimum value so that tight-bend features appear prominently rather than
+  // being compressed at the bottom of the chart. Values above the cap are clipped to the top
+  // edge of the plot area by the canvas clipping region.
+  const MAX_RADIUS_DISPLAY_MULTIPLE = 4;
+  if (!centered && Number.isFinite(yDataMin) && yDataMin > 0) {
+    yDataMax = Math.min(yDataMax, yDataMin * MAX_RADIUS_DISPLAY_MULTIPLE);
   }
   const yMax = niceYMax(yDataMax);
 
@@ -486,6 +497,19 @@ function drawDerivativeGraph(cvs, dctx, title, lineColor, samples, totalArcLengt
     }
   }
   dctx.stroke();
+
+  // Draw vertical marker lines (drawn on top of the data line, clipped to plot area).
+  for (const marker of markerLines) {
+    const mx = toPlotX(marker.s);
+    dctx.strokeStyle = marker.color;
+    dctx.lineWidth = 1.5;
+    dctx.setLineDash([4, 4]);
+    dctx.beginPath();
+    dctx.moveTo(mx, PT);
+    dctx.lineTo(mx, PT + plotH);
+    dctx.stroke();
+    dctx.setLineDash([]);
+  }
 
   dctx.restore();
 
@@ -619,17 +643,30 @@ function draw() {
   } else {
     minRadiusInfo.textContent = "Minimum radius: --";
   }
+
+  // Arc-length position of the current middle-parameter handle, used to draw a marker line on
+  // both derivative graphs so the slider's effect is immediately visible.
+  const middleTSampleIdx = Math.min(Math.round(state.middleT * CURVE_SAMPLE_COUNT), CURVE_SAMPLE_COUNT);
+  const middleTArcLength = samplesAngle[middleTSampleIdx]?.s ?? 0;
+  const middleTMarker = { s: middleTArcLength, color: "#b06000" };
+
   drawDerivativeGraph(
     deriv1Canvas, deriv1Ctx,
     "Tangent Angle (\u00b0)",
     "#2b63ff",
-    samplesAngle, totalArcLength, { centered: true },
+    samplesAngle, totalArcLength, { centered: true, markerLines: [middleTMarker] },
   );
   drawDerivativeGraph(
     deriv2Canvas, deriv2Ctx,
     "Radius of Curvature (R)",
     "#4c8f3b",
-    samplesRadius, totalArcLength, { centered: false },
+    samplesRadius, totalArcLength, {
+      centered: false,
+      markerLines: [
+        middleTMarker,
+        ...(minRadiusSample ? [{ s: minRadiusSample.s, color: "#cc3b2e" }] : []),
+      ],
+    },
   );
 }
 
