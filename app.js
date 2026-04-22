@@ -6,16 +6,22 @@ const deriv2Canvas = document.getElementById("deriv2Canvas");
 const deriv2Ctx = deriv2Canvas.getContext("2d");
 const orderInput = document.getElementById("orderInput");
 const bgImageInput = document.getElementById("bgImageInput");
+const middleTInput = document.getElementById("middleTInput");
+const middleTValue = document.getElementById("middleTValue");
+const minRadiusInfo = document.getElementById("minRadiusInfo");
 const zoomInButton = document.getElementById("zoomInButton");
 const zoomOutButton = document.getElementById("zoomOutButton");
 const resetViewButton = document.getElementById("resetViewButton");
 const CURVE_SAMPLE_COUNT = 250;
-const MIDPOINT_T = 0.5;
+const DEFAULT_MIDDLE_T = 0.5;
 const MIN_SPEED_SQ_THRESHOLD = 1e-10;
+const MIN_CURVATURE_MAG_THRESHOLD = 1e-7;
+const MIN_DETERMINANT_THRESHOLD = 1e-12;
 
 const state = {
   order: Number(orderInput.value),
   points: [],
+  middleT: DEFAULT_MIDDLE_T,
   drag: {
     type: null,
     pointIndex: -1,
@@ -48,12 +54,73 @@ function toWorldCoordinates(clientX, clientY) {
 }
 
 function createDefaultPoints(order) {
-  const count = order + 1;
-  const spacing = canvas.width / (count + 1);
-  return Array.from({ length: count }, (_, i) => ({
-    x: spacing * (i + 1),
-    y: canvas.height * (0.28 + (i % 2) * 0.44),
+  const n = order;
+  return Array.from({ length: n + 1 }, (_, i) => ({
+    x: canvas.width * (0.15 + 0.7 * (i / n)),
+    y: canvas.height * (0.2 + 0.6 * 4 * (i / n) * (1 - i / n)),
   }));
+}
+
+// Exact degree elevation: returns n+2 control points for a degree-(n+1) curve
+// that traces the exact same path as the given n+1 points for degree n.
+function elevateDegree(points) {
+  const n = points.length - 1;
+  const result = new Array(n + 2);
+  result[0] = { ...points[0] };
+  for (let i = 1; i <= n; i += 1) {
+    const alpha = i / (n + 1);
+    result[i] = {
+      x: alpha * points[i - 1].x + (1 - alpha) * points[i].x,
+      y: alpha * points[i - 1].y + (1 - alpha) * points[i].y,
+    };
+  }
+  result[n + 1] = { ...points[n] };
+  return result;
+}
+
+// Approximate degree reduction: returns n control points for a degree-(n-1) curve
+// that best approximates the given n+1 control points for degree n.
+// Uses the Forrest left/right blend to preserve both endpoints exactly.
+function reduceDegree(points) {
+  const n = points.length - 1;
+  if (n <= 1) return points.map((p) => ({ ...p }));
+
+  // Left-to-right: enforce Q[0] = P[0], derive the rest forward
+  const left = new Array(n);
+  left[0] = { ...points[0] };
+  for (let k = 1; k < n - 1; k += 1) {
+    const alpha = k / n;
+    left[k] = {
+      x: (points[k].x - alpha * left[k - 1].x) / (1 - alpha),
+      y: (points[k].y - alpha * left[k - 1].y) / (1 - alpha),
+    };
+  }
+  left[n - 1] = { ...points[n] };
+
+  // Right-to-left: enforce Q[n-1] = P[n], derive the rest backward
+  const right = new Array(n);
+  right[n - 1] = { ...points[n] };
+  for (let k = n - 1; k > 1; k -= 1) {
+    const alpha = k / n;
+    right[k - 1] = {
+      x: (points[k].x - (1 - alpha) * right[k].x) / alpha,
+      y: (points[k].y - (1 - alpha) * right[k].y) / alpha,
+    };
+  }
+  right[0] = { ...points[0] };
+
+  // Blend: linearly interpolate between left and right so both endpoints are exact
+  const result = new Array(n);
+  result[0] = { ...points[0] };
+  result[n - 1] = { ...points[n] };
+  for (let i = 1; i < n - 1; i += 1) {
+    const lambda = i / (n - 1);
+    result[i] = {
+      x: (1 - lambda) * left[i].x + lambda * right[i].x,
+      y: (1 - lambda) * left[i].y + lambda * right[i].y,
+    };
+  }
+  return result;
 }
 
 function evaluateBezier(points, t) {
@@ -101,6 +168,13 @@ function evaluateBezierSecondDerivative(points, t) {
   return evaluateBezier(d2Points, t);
 }
 
+function bernsteinWeights(degree, t) {
+  const oneMinusT = 1 - t;
+  return Array.from({ length: degree + 1 }, (_, k) => (
+    binomial(degree, k) * Math.pow(oneMinusT, degree - k) * Math.pow(t, k)
+  ));
+}
+
 function binomial(n, k) {
   if (k < 0 || k > n) return 0;
   if (k === 0 || k === n) return 1;
@@ -113,27 +187,26 @@ function binomial(n, k) {
   return result;
 }
 
-// Returns the two de Casteljau level-(degree-1) points at t=0.5 for degree >= 4.
+// Returns the two de Casteljau level-(degree-1) points at state.middleT for degree >= 4.
 // These are P_{0,d-1} (left) and P_{1,d-1} (right), which together define the
-// tangent direction and position at the curve midpoint.
+// tangent direction and position at the chosen on-curve parameter.
 // For degree 3 (cubic) this is intentionally omitted: the existing orange handles P1 and P2
 // already give direct control over the full curve, so extra de Casteljau handles would
 // be redundant and confusing. Returns null for degree < 4.
 function getDeCasteljauTangentHandles() {
   const d = state.points.length - 1;
   if (d < 4) return null;
-  const scale = Math.pow(2, d - 1);
+  const weights = bernsteinWeights(d - 1, state.middleT);
   let lx = 0, ly = 0, rx = 0, ry = 0;
   for (let k = 0; k < d; k += 1) {
-    const c = binomial(d - 1, k);
-    lx += c * state.points[k].x;
-    ly += c * state.points[k].y;
-    rx += c * state.points[k + 1].x;
-    ry += c * state.points[k + 1].y;
+    lx += weights[k] * state.points[k].x;
+    ly += weights[k] * state.points[k].y;
+    rx += weights[k] * state.points[k + 1].x;
+    ry += weights[k] * state.points[k + 1].y;
   }
   return {
-    left: { x: lx / scale, y: ly / scale },
-    right: { x: rx / scale, y: ry / scale },
+    left: { x: lx, y: ly },
+    right: { x: rx, y: ry },
   };
 }
 
@@ -143,63 +216,76 @@ function getDeCasteljauTangentHandles() {
 function solveMiddleControlFromHandle(isLeft, handlePos) {
   const points = state.points;
   const d = points.length - 1;
-  const scale = Math.pow(2, d - 1);
+  const weights = bernsteinWeights(d - 1, state.middleT);
   const m = isLeft ? Math.floor(d / 2) : Math.ceil(d / 2);
   let sumX = 0, sumY = 0, coeffM;
   if (isLeft) {
-    // P_{0,d-1} = (1/scale) * sum_{k=0}^{d-1} C(d-1,k) * P_k
-    coeffM = binomial(d - 1, m);
+    // P_{0,d-1}(t) = sum_{k=0}^{d-1} B_{d-1,k}(t) * P_k
+    coeffM = weights[m];
     for (let k = 0; k < d; k += 1) {
       if (k === m) continue;
-      const c = binomial(d - 1, k);
-      sumX += c * points[k].x;
-      sumY += c * points[k].y;
+      sumX += weights[k] * points[k].x;
+      sumY += weights[k] * points[k].y;
     }
   } else {
-    // P_{1,d-1} = (1/scale) * sum_{k=0}^{d-1} C(d-1,k) * P_{k+1}
-    // Coefficient of P_m is C(d-1, m-1)
-    coeffM = binomial(d - 1, m - 1);
+    // P_{1,d-1}(t) = sum_{k=0}^{d-1} B_{d-1,k}(t) * P_{k+1}
+    coeffM = weights[m - 1];
     for (let k = 0; k < d; k += 1) {
       if (k === m - 1) continue;
-      const c = binomial(d - 1, k);
-      sumX += c * points[k + 1].x;
-      sumY += c * points[k + 1].y;
+      sumX += weights[k] * points[k + 1].x;
+      sumY += weights[k] * points[k + 1].y;
     }
   }
-  // coeffM is always positive for d >= 4 (binomial coefficient in the interior of Pascal's triangle).
+  // coeffM is always positive for d >= 4 and 0 < t < 1 (interior Bernstein coefficient).
   if (coeffM === 0) return;
   points[m] = {
-    x: (scale * handlePos.x - sumX) / coeffM,
-    y: (scale * handlePos.y - sumY) / coeffM,
+    x: (handlePos.x - sumX) / coeffM,
+    y: (handlePos.y - sumY) / coeffM,
   };
 }
 
 // Constrained solve for quintic (d=5) only.
-// Given the dragged handle position and the yellow midpoint position that must stay fixed,
-// mirrors the opposite handle through yellow (newRight = 2*yellow - newLeft) and solves
-// for both P[2] and P[3] simultaneously from the two resulting linear equations:
-//   P_{0,4}(t=0.5) = newLeft  →  6·P2 + 4·P3 = 16·newLeft - P0 - 4·P1 - P4
-//   P_{1,4}(t=0.5) = newRight →  4·P2 + 6·P3 = 16·newRight - P1 - 4·P4 - P5
-// This guarantees yellow = (newLeft + newRight) / 2 = fixedYellow throughout the drag.
+// Given one dragged handle and the yellow on-curve point that must stay fixed at parameter t,
+// computes the opposite handle from yellow = (1-t)*left + t*right, then solves for P[2] and P[3]
+// from the resulting two linear equations for P_{0,4}(t) and P_{1,4}(t).
 function solveMiddleControlsConstrained(isLeft, handlePos, fixedYellow) {
   const points = state.points;
   const d = points.length - 1;
   if (d !== 5) return;
-  const scale = Math.pow(2, d - 1); // 16
+  const t = state.middleT;
+  if (t <= 0 || t >= 1) return;
+  const oneMinusT = 1 - t;
+  const weights = bernsteinWeights(4, t);
   const newLeft = isLeft
     ? handlePos
-    : { x: 2 * fixedYellow.x - handlePos.x, y: 2 * fixedYellow.y - handlePos.y };
+    : {
+      x: (fixedYellow.x - t * handlePos.x) / oneMinusT,
+      y: (fixedYellow.y - t * handlePos.y) / oneMinusT,
+    };
   const newRight = isLeft
-    ? { x: 2 * fixedYellow.x - handlePos.x, y: 2 * fixedYellow.y - handlePos.y }
+    ? {
+      x: (fixedYellow.x - oneMinusT * handlePos.x) / t,
+      y: (fixedYellow.y - oneMinusT * handlePos.y) / t,
+    }
     : handlePos;
-  // lv = scale·newLeft - (P0 + 4·P1 + P4)
-  const lvx = scale * newLeft.x - points[0].x - 4 * points[1].x - points[4].x;
-  const lvy = scale * newLeft.y - points[0].y - 4 * points[1].y - points[4].y;
-  // rv = scale·newRight - (P1 + 4·P4 + P5)
-  const rvx = scale * newRight.x - points[1].x - 4 * points[4].x - points[5].x;
-  const rvy = scale * newRight.y - points[1].y - 4 * points[4].y - points[5].y;
-  points[2] = { x: (3 * lvx - 2 * rvx) / 10, y: (3 * lvy - 2 * rvy) / 10 };
-  points[3] = { x: (3 * rvx - 2 * lvx) / 10, y: (3 * rvy - 2 * lvy) / 10 };
+  const b1x = newLeft.x - (weights[0] * points[0].x + weights[1] * points[1].x + weights[4] * points[4].x);
+  const b1y = newLeft.y - (weights[0] * points[0].y + weights[1] * points[1].y + weights[4] * points[4].y);
+  const b2x = newRight.x - (weights[0] * points[1].x + weights[3] * points[4].x + weights[4] * points[5].x);
+  const b2y = newRight.y - (weights[0] * points[1].y + weights[3] * points[4].y + weights[4] * points[5].y);
+  const a11 = weights[2];
+  const a12 = weights[3];
+  const a21 = weights[1];
+  const a22 = weights[2];
+  const determinant = a11 * a22 - a12 * a21;
+  if (Math.abs(determinant) < MIN_DETERMINANT_THRESHOLD) return;
+  points[2] = {
+    x: (b1x * a22 - b2x * a12) / determinant,
+    y: (b1y * a22 - b2y * a12) / determinant,
+  };
+  points[3] = {
+    x: (a11 * b2x - a21 * b1x) / determinant,
+    y: (a11 * b2y - a21 * b1y) / determinant,
+  };
 }
 
 function distancePointToSegment(point, start, end) {
@@ -262,9 +348,42 @@ function clearDrag(event) {
 }
 
 function setCurveOrder(order) {
-  state.order = clamp(order, 1, 8);
-  orderInput.value = String(state.order);
-  state.points = createDefaultPoints(state.order);
+  const newOrder = clamp(order, 1, 8);
+  orderInput.value = String(newOrder);
+  const currentOrder = state.points.length - 1;
+  if (state.points.length > 0 && currentOrder !== newOrder) {
+    let pts = state.points;
+    if (newOrder > currentOrder) {
+      for (let d = currentOrder; d < newOrder; d += 1) {
+        pts = elevateDegree(pts);
+      }
+    } else {
+      for (let d = currentOrder; d > newOrder; d -= 1) {
+        pts = reduceDegree(pts);
+      }
+    }
+    state.points = pts;
+  } else if (state.points.length === 0) {
+    state.points = createDefaultPoints(newOrder);
+  }
+  state.order = newOrder;
+  draw();
+}
+
+function getMiddleTBounds() {
+  const minAttr = parseFloat(middleTInput.min);
+  const maxAttr = parseFloat(middleTInput.max);
+  return {
+    min: Number.isFinite(minAttr) ? minAttr : 0.05,
+    max: Number.isFinite(maxAttr) ? maxAttr : 0.95,
+  };
+}
+
+function setMiddleParameter(nextT) {
+  const { min, max } = getMiddleTBounds();
+  state.middleT = clamp(nextT, min, max);
+  middleTInput.value = state.middleT.toFixed(2);
+  middleTValue.value = state.middleT.toFixed(2);
   draw();
 }
 
@@ -292,16 +411,17 @@ function formatAxisValue(v) {
   return v.toFixed(3);
 }
 
-// Samples tangent angle (degrees) and curvature at CURVE_SAMPLE_COUNT+1 evenly-spaced t values.
+// Samples tangent angle (degrees) and radius of curvature at CURVE_SAMPLE_COUNT+1 evenly-spaced t values.
 // Arc length (chord-length approximation) is accumulated and used as the x-axis for both graphs.
-// Returns { samplesAngle, samplesCurvature, totalArcLength } where each sample is { s, v }.
+// Returns { samplesAngle, samplesRadius, totalArcLength, minRadiusSample } where each sample is { s, v }.
 function buildDerivativeSamples() {
   if (state.points.length < 2) {
-    return { samplesAngle: [], samplesCurvature: [], totalArcLength: 0 };
+    return { samplesAngle: [], samplesRadius: [], totalArcLength: 0, minRadiusSample: null };
   }
   const n = CURVE_SAMPLE_COUNT;
   const samplesAngle = [];
-  const samplesCurvature = [];
+  const samplesRadius = [];
+  let minRadiusSample = null;
   let arcLen = 0;
   let prevPoint = evaluateBezier(state.points, 0);
   for (let i = 0; i <= n; i += 1) {
@@ -316,10 +436,17 @@ function buildDerivativeSamples() {
     const speed2 = d1.x * d1.x + d1.y * d1.y;
     const angle = speed2 < MIN_SPEED_SQ_THRESHOLD ? 0 : Math.atan2(d1.y, d1.x) * (180 / Math.PI);
     const curvature = speed2 < MIN_SPEED_SQ_THRESHOLD ? 0 : (d1.x * d2.y - d1.y * d2.x) / Math.pow(speed2, 1.5);
+    const absCurvature = Math.abs(curvature);
+    const radius = absCurvature < MIN_CURVATURE_MAG_THRESHOLD
+      ? null
+      : 1 / absCurvature;
     samplesAngle.push({ s: arcLen, v: angle });
-    samplesCurvature.push({ s: arcLen, v: curvature });
+    samplesRadius.push({ s: arcLen, v: radius });
+    if (radius !== null && (!minRadiusSample || radius < minRadiusSample.v)) {
+      minRadiusSample = { s: arcLen, v: radius, t };
+    }
   }
-  return { samplesAngle, samplesCurvature, totalArcLength: arcLen };
+  return { samplesAngle, samplesRadius, totalArcLength: arcLen, minRadiusSample };
 }
 
 const DERIV_GRAPH_PADDING = { left: 62, right: 20, top: 30, bottom: 38 };
@@ -327,7 +454,9 @@ const DERIV_GRAPH_PADDING = { left: 62, right: 20, top: 30, bottom: 38 };
 // Draws a scalar derivative graph (single line) onto a canvas.
 // Horizontal axis: arc length (0–100% of total). Vertical axis: auto-scaled to data range.
 // samples: array of { s, v } where v is the scalar value at arc-length s.
-function drawDerivativeGraph(cvs, dctx, title, lineColor, samples, totalArcLength) {
+function drawDerivativeGraph(cvs, dctx, title, lineColor, samples, totalArcLength, options = {}) {
+  const centered = options.centered === true;
+  const markerLines = options.markerLines ?? [];
   const W = cvs.width;
   const H = cvs.height;
   const { left: PL, right: PR, top: PT, bottom: PB } = DERIV_GRAPH_PADDING;
@@ -341,18 +470,35 @@ function drawDerivativeGraph(cvs, dctx, title, lineColor, samples, totalArcLengt
 
   if (samples.length === 0 || totalArcLength === 0) return;
 
-  let maxAbs = 0;
-  for (const sample of samples) {
-    maxAbs = Math.max(maxAbs, Math.abs(sample.v));
+  const finiteValueSamples = samples.filter((sample) => Number.isFinite(sample.v));
+  if (finiteValueSamples.length === 0) return;
+
+  let yDataMax = 0;
+  let yDataMin = Infinity;
+  for (const sample of finiteValueSamples) {
+    const val = centered ? Math.abs(sample.v) : sample.v;
+    yDataMax = Math.max(yDataMax, val);
+    if (!centered) yDataMin = Math.min(yDataMin, val);
   }
-  const yMax = niceYMax(maxAbs);
+  // For non-centered (positive-only) data such as radius: cap the display range at a fixed
+  // multiple of the minimum value so that tight-bend features appear prominently rather than
+  // being compressed at the bottom of the chart. Values above the cap are clipped to the top
+  // edge of the plot area by the canvas clipping region.
+  const MAX_RADIUS_DISPLAY_MULTIPLE = 4;
+  if (!centered && Number.isFinite(yDataMin) && yDataMin > 0) {
+    yDataMax = Math.min(yDataMax, yDataMin * MAX_RADIUS_DISPLAY_MULTIPLE);
+  }
+  const yMax = niceYMax(yDataMax);
 
   const toPlotX = (s) => PL + (s / totalArcLength) * plotW;
-  const toPlotY = (v) => PT + plotH / 2 - (v / yMax) * (plotH / 2);
+  const toPlotY = centered
+    ? (v) => PT + plotH / 2 - (v / yMax) * (plotH / 2)
+    : (v) => PT + plotH - (v / yMax) * plotH;
 
-  // Horizontal grid lines at ±100%, ±50%, and zero
+  // Horizontal grid lines and emphasized baseline.
   dctx.lineWidth = 1;
-  for (const frac of [-1, -0.5, 0.5, 1]) {
+  const gridFracs = centered ? [-1, -0.5, 0.5, 1] : [0.25, 0.5, 0.75, 1];
+  for (const frac of gridFracs) {
     dctx.strokeStyle = "#eceef4";
     dctx.beginPath();
     dctx.moveTo(PL, toPlotY(frac * yMax));
@@ -361,8 +507,9 @@ function drawDerivativeGraph(cvs, dctx, title, lineColor, samples, totalArcLengt
   }
   dctx.strokeStyle = "#c8ccd8";
   dctx.beginPath();
-  dctx.moveTo(PL, toPlotY(0));
-  dctx.lineTo(PL + plotW, toPlotY(0));
+  const baseY = toPlotY(0);
+  dctx.moveTo(PL, baseY);
+  dctx.lineTo(PL + plotW, baseY);
   dctx.stroke();
 
   // Y axis labels
@@ -370,7 +517,8 @@ function drawDerivativeGraph(cvs, dctx, title, lineColor, samples, totalArcLengt
   dctx.font = "11px Arial";
   dctx.textAlign = "right";
   dctx.textBaseline = "middle";
-  for (const frac of [-1, -0.5, 0, 0.5, 1]) {
+  const labelFracs = centered ? [-1, -0.5, 0, 0.5, 1] : [0, 0.25, 0.5, 0.75, 1];
+  for (const frac of labelFracs) {
     dctx.fillText(formatAxisValue(frac * yMax), PL - 5, toPlotY(frac * yMax));
   }
 
@@ -410,13 +558,42 @@ function drawDerivativeGraph(cvs, dctx, title, lineColor, samples, totalArcLengt
   dctx.lineWidth = 1.5;
   dctx.strokeStyle = lineColor;
   dctx.beginPath();
+  let hasSegment = false;
   for (let i = 0; i < samples.length; i += 1) {
+    if (!Number.isFinite(samples[i].v)) {
+      hasSegment = false;
+      continue;
+    }
     const px = toPlotX(samples[i].s);
     const py = toPlotY(samples[i].v);
-    if (i === 0) dctx.moveTo(px, py);
-    else dctx.lineTo(px, py);
+    if (!hasSegment) {
+      dctx.moveTo(px, py);
+      hasSegment = true;
+    } else {
+      dctx.lineTo(px, py);
+    }
   }
   dctx.stroke();
+
+  // Draw vertical marker lines (drawn on top of the data line, clipped to plot area).
+  for (const marker of markerLines) {
+    const mx = toPlotX(marker.s);
+    dctx.strokeStyle = marker.color;
+    dctx.lineWidth = 1.5;
+    dctx.setLineDash([4, 4]);
+    dctx.beginPath();
+    dctx.moveTo(mx, PT);
+    dctx.lineTo(mx, PT + plotH);
+    dctx.stroke();
+    dctx.setLineDash([]);
+    if (marker.label) {
+      dctx.font = "bold 10px Arial";
+      dctx.textAlign = "center";
+      dctx.textBaseline = "top";
+      dctx.fillStyle = marker.color;
+      dctx.fillText(marker.label, mx, PT + 2);
+    }
+  }
 
   dctx.restore();
 
@@ -533,7 +710,7 @@ function draw() {
   });
 
   if (showMidHandle) {
-    const midpoint = evaluateBezier(state.points, MIDPOINT_T);
+    const midpoint = evaluateBezier(state.points, state.middleT);
     ctx.beginPath();
     ctx.arc(midpoint.x, midpoint.y, 6 / state.zoom, 0, Math.PI * 2);
     ctx.fillStyle = "#ffec9a";
@@ -543,18 +720,54 @@ function draw() {
     ctx.stroke();
   }
 
-  const { samplesAngle, samplesCurvature, totalArcLength } = buildDerivativeSamples();
+  const { samplesAngle, samplesRadius, totalArcLength, minRadiusSample } = buildDerivativeSamples();
+  if (minRadiusSample && totalArcLength > 0) {
+    const lengthFraction = minRadiusSample.s / totalArcLength;
+    minRadiusInfo.textContent = `Minimum radius: ${formatAxisValue(minRadiusSample.v)} at arc fraction ${lengthFraction.toFixed(3)}`;
+  } else {
+    minRadiusInfo.textContent = "Minimum radius: --";
+  }
+
+  // Draw a red diamond on the spline at the minimum-radius (tightest-bend) point.
+  if (minRadiusSample) {
+    const minRpt = evaluateBezier(state.points, minRadiusSample.t);
+    const ds = 7 / state.zoom;
+    ctx.save();
+    ctx.translate(minRpt.x, minRpt.y);
+    ctx.rotate(Math.PI / 4);
+    ctx.beginPath();
+    ctx.rect(-ds / 2, -ds / 2, ds, ds);
+    ctx.fillStyle = "#cc3b2e";
+    ctx.fill();
+    ctx.lineWidth = 1.5 / state.zoom;
+    ctx.strokeStyle = "#1e1f23";
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  // Arc-length position of the current middle-parameter handle, used to draw a marker line on
+  // both derivative graphs so the slider's effect is immediately visible.
+  const middleTSampleIdx = Math.min(Math.round(state.middleT * CURVE_SAMPLE_COUNT), CURVE_SAMPLE_COUNT);
+  const middleTArcLength = samplesAngle[middleTSampleIdx]?.s ?? 0;
+  const middleTMarker = { s: middleTArcLength, color: "#b06000", label: "t" };
+
   drawDerivativeGraph(
     deriv1Canvas, deriv1Ctx,
     "Tangent Angle (\u00b0)",
     "#2b63ff",
-    samplesAngle, totalArcLength,
+    samplesAngle, totalArcLength, { centered: true, markerLines: [middleTMarker] },
   );
   drawDerivativeGraph(
     deriv2Canvas, deriv2Ctx,
-    "Curvature (\u03ba)",
+    "Radius of Curvature (R)",
     "#4c8f3b",
-    samplesCurvature, totalArcLength,
+    samplesRadius, totalArcLength, {
+      centered: false,
+      markerLines: [
+        middleTMarker,
+        ...(minRadiusSample ? [{ s: minRadiusSample.s, color: "#cc3b2e", label: "R\u2098\u1d62\u2099" }] : []),
+      ],
+    },
   );
 }
 
@@ -579,20 +792,20 @@ canvas.addEventListener("pointerdown", (event) => {
       if (Math.hypot(handles.left.x - position.x, handles.left.y - position.y) <= hitRadius) {
         beginDrag("mid-tangent-handle", event, {
           pointIndex: 0,
-          startYellow: evaluateBezier(state.points, MIDPOINT_T),
+          startYellow: evaluateBezier(state.points, state.middleT),
         });
         return;
       }
       if (Math.hypot(handles.right.x - position.x, handles.right.y - position.y) <= hitRadius) {
         beginDrag("mid-tangent-handle", event, {
           pointIndex: 1,
-          startYellow: evaluateBezier(state.points, MIDPOINT_T),
+          startYellow: evaluateBezier(state.points, state.middleT),
         });
         return;
       }
     }
 
-    const midpoint = evaluateBezier(state.points, MIDPOINT_T);
+    const midpoint = evaluateBezier(state.points, state.middleT);
     if (Math.hypot(midpoint.x - position.x, midpoint.y - position.y) <= hitRadius) {
       beginDrag("middle-control", event, { lastPosition: position });
       return;
@@ -696,6 +909,9 @@ canvas.addEventListener(
 orderInput.addEventListener("change", () => {
   setCurveOrder(Number(orderInput.value));
 });
+middleTInput.addEventListener("input", () => {
+  setMiddleParameter(Number(middleTInput.value));
+});
 
 zoomInButton.addEventListener("click", () => setZoom(state.zoom * 1.2));
 zoomOutButton.addEventListener("click", () => setZoom(state.zoom / 1.2));
@@ -743,3 +959,4 @@ bgImageInput.addEventListener("change", (event) => {
 });
 
 setCurveOrder(state.order);
+setMiddleParameter(DEFAULT_MIDDLE_T);
