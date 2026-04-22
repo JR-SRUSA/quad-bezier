@@ -54,12 +54,73 @@ function toWorldCoordinates(clientX, clientY) {
 }
 
 function createDefaultPoints(order) {
-  const count = order + 1;
-  const spacing = canvas.width / (count + 1);
-  return Array.from({ length: count }, (_, i) => ({
-    x: spacing * (i + 1),
-    y: canvas.height * (0.28 + (i % 2) * 0.44),
+  const n = order;
+  return Array.from({ length: n + 1 }, (_, i) => ({
+    x: canvas.width * (0.15 + 0.7 * (i / n)),
+    y: canvas.height * (0.2 + 0.6 * 4 * (i / n) * (1 - i / n)),
   }));
+}
+
+// Exact degree elevation: returns n+2 control points for a degree-(n+1) curve
+// that traces the exact same path as the given n+1 points for degree n.
+function elevateDegree(points) {
+  const n = points.length - 1;
+  const result = new Array(n + 2);
+  result[0] = { ...points[0] };
+  for (let i = 1; i <= n; i += 1) {
+    const alpha = i / (n + 1);
+    result[i] = {
+      x: alpha * points[i - 1].x + (1 - alpha) * points[i].x,
+      y: alpha * points[i - 1].y + (1 - alpha) * points[i].y,
+    };
+  }
+  result[n + 1] = { ...points[n] };
+  return result;
+}
+
+// Approximate degree reduction: returns n control points for a degree-(n-1) curve
+// that best approximates the given n+1 control points for degree n.
+// Uses the Forrest left/right blend to preserve both endpoints exactly.
+function reduceDegree(points) {
+  const n = points.length - 1;
+  if (n <= 1) return points.map((p) => ({ ...p }));
+
+  // Left-to-right: enforce Q[0] = P[0], derive the rest forward
+  const left = new Array(n);
+  left[0] = { ...points[0] };
+  for (let k = 1; k < n - 1; k += 1) {
+    const alpha = k / n;
+    left[k] = {
+      x: (points[k].x - alpha * left[k - 1].x) / (1 - alpha),
+      y: (points[k].y - alpha * left[k - 1].y) / (1 - alpha),
+    };
+  }
+  left[n - 1] = { ...points[n] };
+
+  // Right-to-left: enforce Q[n-1] = P[n], derive the rest backward
+  const right = new Array(n);
+  right[n - 1] = { ...points[n] };
+  for (let k = n - 1; k > 1; k -= 1) {
+    const alpha = k / n;
+    right[k - 1] = {
+      x: (points[k].x - (1 - alpha) * right[k].x) / alpha,
+      y: (points[k].y - (1 - alpha) * right[k].y) / alpha,
+    };
+  }
+  right[0] = { ...points[0] };
+
+  // Blend: linearly interpolate between left and right so both endpoints are exact
+  const result = new Array(n);
+  result[0] = { ...points[0] };
+  result[n - 1] = { ...points[n] };
+  for (let i = 1; i < n - 1; i += 1) {
+    const lambda = i / (n - 1);
+    result[i] = {
+      x: (1 - lambda) * left[i].x + lambda * right[i].x,
+      y: (1 - lambda) * left[i].y + lambda * right[i].y,
+    };
+  }
+  return result;
 }
 
 function evaluateBezier(points, t) {
@@ -287,9 +348,25 @@ function clearDrag(event) {
 }
 
 function setCurveOrder(order) {
-  state.order = clamp(order, 1, 8);
-  orderInput.value = String(state.order);
-  state.points = createDefaultPoints(state.order);
+  const newOrder = clamp(order, 1, 8);
+  orderInput.value = String(newOrder);
+  const currentOrder = state.points.length - 1;
+  if (state.points.length > 0 && currentOrder !== newOrder) {
+    let pts = state.points;
+    if (newOrder > currentOrder) {
+      for (let d = currentOrder; d < newOrder; d += 1) {
+        pts = elevateDegree(pts);
+      }
+    } else {
+      for (let d = currentOrder; d > newOrder; d -= 1) {
+        pts = reduceDegree(pts);
+      }
+    }
+    state.points = pts;
+  } else if (state.points.length === 0) {
+    state.points = createDefaultPoints(newOrder);
+  }
+  state.order = newOrder;
   draw();
 }
 
@@ -688,7 +765,7 @@ function draw() {
       centered: false,
       markerLines: [
         middleTMarker,
-        ...(minRadiusSample ? [{ s: minRadiusSample.s, color: "#cc3b2e", label: "R\u2098\u1d35\u2099" }] : []),
+        ...(minRadiusSample ? [{ s: minRadiusSample.s, color: "#cc3b2e", label: "R\u2098\u1d62\u2099" }] : []),
       ],
     },
   );
