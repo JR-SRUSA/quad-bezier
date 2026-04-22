@@ -366,7 +366,7 @@ function buildDerivativeSamples() {
     samplesAngle.push({ s: arcLen, v: angle });
     samplesRadius.push({ s: arcLen, v: radius });
     if (radius !== null && (!minRadiusSample || radius < minRadiusSample.v)) {
-      minRadiusSample = { s: arcLen, v: radius };
+      minRadiusSample = { s: arcLen, v: radius, t };
     }
   }
   return { samplesAngle, samplesRadius, totalArcLength: arcLen, minRadiusSample };
@@ -509,6 +509,13 @@ function drawDerivativeGraph(cvs, dctx, title, lineColor, samples, totalArcLengt
     dctx.lineTo(mx, PT + plotH);
     dctx.stroke();
     dctx.setLineDash([]);
+    if (marker.label) {
+      dctx.font = "bold 10px Arial";
+      dctx.textAlign = "center";
+      dctx.textBaseline = "top";
+      dctx.fillStyle = marker.color;
+      dctx.fillText(marker.label, mx, PT + 2);
+    }
   }
 
   dctx.restore();
@@ -644,11 +651,28 @@ function draw() {
     minRadiusInfo.textContent = "Minimum radius: --";
   }
 
+  // Draw a red diamond on the spline at the minimum-radius (tightest-bend) point.
+  if (minRadiusSample) {
+    const minRpt = evaluateBezier(state.points, minRadiusSample.t);
+    const ds = 7 / state.zoom;
+    ctx.save();
+    ctx.translate(minRpt.x, minRpt.y);
+    ctx.rotate(Math.PI / 4);
+    ctx.beginPath();
+    ctx.rect(-ds / 2, -ds / 2, ds, ds);
+    ctx.fillStyle = "#cc3b2e";
+    ctx.fill();
+    ctx.lineWidth = 1.5 / state.zoom;
+    ctx.strokeStyle = "#1e1f23";
+    ctx.stroke();
+    ctx.restore();
+  }
+
   // Arc-length position of the current middle-parameter handle, used to draw a marker line on
   // both derivative graphs so the slider's effect is immediately visible.
   const middleTSampleIdx = Math.min(Math.round(state.middleT * CURVE_SAMPLE_COUNT), CURVE_SAMPLE_COUNT);
   const middleTArcLength = samplesAngle[middleTSampleIdx]?.s ?? 0;
-  const middleTMarker = { s: middleTArcLength, color: "#b06000" };
+  const middleTMarker = { s: middleTArcLength, color: "#b06000", label: "t" };
 
   drawDerivativeGraph(
     deriv1Canvas, deriv1Ctx,
@@ -664,7 +688,7 @@ function draw() {
       centered: false,
       markerLines: [
         middleTMarker,
-        ...(minRadiusSample ? [{ s: minRadiusSample.s, color: "#cc3b2e" }] : []),
+        ...(minRadiusSample ? [{ s: minRadiusSample.s, color: "#cc3b2e", label: "R\u2098\u1d35\u2099" }] : []),
       ],
     },
   );
