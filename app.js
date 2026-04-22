@@ -7,15 +7,10 @@ const zoomOutButton = document.getElementById("zoomOutButton");
 const resetViewButton = document.getElementById("resetViewButton");
 const CURVE_SAMPLE_COUNT = 250;
 const MIDPOINT_T = 0.5;
-const DEFAULT_MIDPOINT_TANGENT_HALF_LENGTH = 60;
-const MIN_MIDPOINT_TANGENT_HALF_LENGTH = 10;
 
 const state = {
   order: Number(orderInput.value),
   points: [],
-  midTangentHalfLength: DEFAULT_MIDPOINT_TANGENT_HALF_LENGTH,
-  // Override angle in radians for the midpoint tangent indicator; null means use the computed curve tangent direction.
-  midTangentOverrideAngle: null,
   drag: {
     type: null,
     pointIndex: -1,
@@ -78,40 +73,76 @@ function evaluateBezierDerivative(points, t) {
   return evaluateBezier(derivativePoints, t);
 }
 
-function getMidpointCurveData() {
-  const point = evaluateBezier(state.points, MIDPOINT_T);
-  let tangent = evaluateBezierDerivative(state.points, MIDPOINT_T);
-  let tangentLength = Math.hypot(tangent.x, tangent.y);
-
-  if (tangentLength < 0.0001) {
-    const low = evaluateBezier(state.points, MIDPOINT_T - 0.01);
-    const high = evaluateBezier(state.points, MIDPOINT_T + 0.01);
-    tangent = { x: high.x - low.x, y: high.y - low.y };
-    tangentLength = Math.hypot(tangent.x, tangent.y);
+function binomial(n, k) {
+  if (k < 0 || k > n) return 0;
+  if (k === 0 || k === n) return 1;
+  // Compute via the multiplicative formula C(n,k) = n*(n-1)*...*(n-k+1) / k!
+  // Each step divides an integer product, so intermediate values stay exact integers.
+  let result = 1;
+  for (let i = 0; i < k; i += 1) {
+    result = (result * (n - i)) / (i + 1);
   }
+  return result;
+}
 
-  if (tangentLength < 0.0001) {
-    tangent = { x: 1, y: 0 };
-    tangentLength = 1;
+// Returns the two de Casteljau level-(degree-1) points at t=0.5 for degree >= 4.
+// These are P_{0,d-1} (left) and P_{1,d-1} (right), which together define the
+// tangent direction and position at the curve midpoint.
+// For degree 3 (cubic) this is intentionally omitted: the existing orange handles P1 and P2
+// already give direct control over the full curve, so extra de Casteljau handles would
+// be redundant and confusing. Returns null for degree < 4.
+function getDeCasteljauTangentHandles() {
+  const d = state.points.length - 1;
+  if (d < 4) return null;
+  const scale = Math.pow(2, d - 1);
+  let lx = 0, ly = 0, rx = 0, ry = 0;
+  for (let k = 0; k < d; k += 1) {
+    const c = binomial(d - 1, k);
+    lx += c * state.points[k].x;
+    ly += c * state.points[k].y;
+    rx += c * state.points[k + 1].x;
+    ry += c * state.points[k + 1].y;
   }
-
-  const unit =
-    state.midTangentOverrideAngle !== null
-      ? { x: Math.cos(state.midTangentOverrideAngle), y: Math.sin(state.midTangentOverrideAngle) }
-      : { x: tangent.x / tangentLength, y: tangent.y / tangentLength };
-
-  const halfLen = state.midTangentHalfLength;
   return {
-    point,
-    unit,
-    tangentStart: {
-      x: point.x - unit.x * halfLen,
-      y: point.y - unit.y * halfLen,
-    },
-    tangentEnd: {
-      x: point.x + unit.x * halfLen,
-      y: point.y + unit.y * halfLen,
-    },
+    left: { x: lx / scale, y: ly / scale },
+    right: { x: rx / scale, y: ry / scale },
+  };
+}
+
+// Given a dragged position for the left (isLeft=true) or right (isLeft=false) de Casteljau
+// tangent handle, back-solves for the middle control point and updates state.points.
+// Left handle → solves for P_{floor(d/2)}; right handle → solves for P_{ceil(d/2)}.
+function solveMiddleControlFromHandle(isLeft, handlePos) {
+  const points = state.points;
+  const d = points.length - 1;
+  const scale = Math.pow(2, d - 1);
+  const m = isLeft ? Math.floor(d / 2) : Math.ceil(d / 2);
+  let sumX = 0, sumY = 0, coeffM;
+  if (isLeft) {
+    // P_{0,d-1} = (1/scale) * sum_{k=0}^{d-1} C(d-1,k) * P_k
+    coeffM = binomial(d - 1, m);
+    for (let k = 0; k < d; k += 1) {
+      if (k === m) continue;
+      const c = binomial(d - 1, k);
+      sumX += c * points[k].x;
+      sumY += c * points[k].y;
+    }
+  } else {
+    // P_{1,d-1} = (1/scale) * sum_{k=0}^{d-1} C(d-1,k) * P_{k+1}
+    // Coefficient of P_m is C(d-1, m-1)
+    coeffM = binomial(d - 1, m - 1);
+    for (let k = 0; k < d; k += 1) {
+      if (k === m - 1) continue;
+      const c = binomial(d - 1, k);
+      sumX += c * points[k + 1].x;
+      sumY += c * points[k + 1].y;
+    }
+  }
+  // coeffM is always positive for d >= 4 (binomial coefficient in the interior of Pascal's triangle).
+  if (coeffM === 0) return;
+  points[m] = {
+    x: (scale * handlePos.x - sumX) / coeffM,
+    y: (scale * handlePos.y - sumY) / coeffM,
   };
 }
 
@@ -176,8 +207,6 @@ function setCurveOrder(order) {
   state.order = clamp(order, 1, 8);
   orderInput.value = String(state.order);
   state.points = createDefaultPoints(state.order);
-  state.midTangentHalfLength = DEFAULT_MIDPOINT_TANGENT_HALF_LENGTH;
-  state.midTangentOverrideAngle = null;
   draw();
 }
 
@@ -228,15 +257,15 @@ function draw() {
   }
 
   const showMidHandle = state.points.length > 2;
-  const midpointData = showMidHandle ? getMidpointCurveData() : null;
+  const handles = getDeCasteljauTangentHandles();
 
-  if (showMidHandle) {
+  if (handles) {
     ctx.strokeStyle = "#4c8f3b";
     ctx.lineWidth = 1 / state.zoom;
     ctx.setLineDash([8 / state.zoom, 6 / state.zoom]);
     ctx.beginPath();
-    ctx.moveTo(midpointData.tangentStart.x, midpointData.tangentStart.y);
-    ctx.lineTo(midpointData.tangentEnd.x, midpointData.tangentEnd.y);
+    ctx.moveTo(handles.left.x, handles.left.y);
+    ctx.lineTo(handles.right.x, handles.right.y);
     ctx.stroke();
     ctx.setLineDash([]);
   }
@@ -273,9 +302,9 @@ function draw() {
         "#f39a1e",
       );
     }
-    if (showMidHandle) {
-      drawTangentTip(midpointData.tangentStart.x, midpointData.tangentStart.y, "#4c8f3b");
-      drawTangentTip(midpointData.tangentEnd.x, midpointData.tangentEnd.y, "#4c8f3b");
+    if (handles) {
+      drawTangentTip(handles.left.x, handles.left.y, "#4c8f3b");
+      drawTangentTip(handles.right.x, handles.right.y, "#4c8f3b");
     }
   }
 
@@ -290,8 +319,9 @@ function draw() {
   });
 
   if (showMidHandle) {
+    const midpoint = evaluateBezier(state.points, MIDPOINT_T);
     ctx.beginPath();
-    ctx.arc(midpointData.point.x, midpointData.point.y, 6 / state.zoom, 0, Math.PI * 2);
+    ctx.arc(midpoint.x, midpoint.y, 6 / state.zoom, 0, Math.PI * 2);
     ctx.fillStyle = "#ffec9a";
     ctx.fill();
     ctx.lineWidth = 2 / state.zoom;
@@ -316,24 +346,25 @@ canvas.addEventListener("pointerdown", (event) => {
   const showMidHandle = state.points.length > 2;
 
   if (showMidHandle) {
-    const midpointData = getMidpointCurveData();
-    if (Math.hypot(midpointData.point.x - position.x, midpointData.point.y - position.y) <= hitRadius) {
-      beginDrag("middle-control", event, { lastPosition: midpointData.point });
-      return;
-    }
-
-    const tips = [midpointData.tangentStart, midpointData.tangentEnd];
-    for (let tipIdx = 0; tipIdx < tips.length; tipIdx += 1) {
-      if (Math.hypot(tips[tipIdx].x - position.x, tips[tipIdx].y - position.y) <= hitRadius) {
-        beginDrag("mid-tangent-tip", event, { pointIndex: tipIdx });
+    const handles = getDeCasteljauTangentHandles();
+    if (handles) {
+      if (Math.hypot(handles.left.x - position.x, handles.left.y - position.y) <= hitRadius) {
+        beginDrag("mid-tangent-handle", event, { pointIndex: 0 });
+        return;
+      }
+      if (Math.hypot(handles.right.x - position.x, handles.right.y - position.y) <= hitRadius) {
+        beginDrag("mid-tangent-handle", event, { pointIndex: 1 });
         return;
       }
     }
 
-    if (
-      distancePointToSegment(position, midpointData.tangentStart, midpointData.tangentEnd) <=
-      hitRadius
-    ) {
+    const midpoint = evaluateBezier(state.points, MIDPOINT_T);
+    if (Math.hypot(midpoint.x - position.x, midpoint.y - position.y) <= hitRadius) {
+      beginDrag("middle-control", event, { lastPosition: position });
+      return;
+    }
+
+    if (handles && distancePointToSegment(position, handles.left, handles.right) <= hitRadius) {
       beginDrag("middle-tangent", event, { lastPosition: position });
       return;
     }
@@ -393,15 +424,8 @@ canvas.addEventListener("pointermove", (event) => {
     if (targetIndex >= 0) {
       dragControlPointByDelta(targetIndex, position);
     }
-  } else if (state.drag.type === "mid-tangent-tip") {
-    const midData = getMidpointCurveData();
-    const dx = position.x - midData.point.x;
-    const dy = position.y - midData.point.y;
-    const dist = Math.hypot(dx, dy);
-    const angle = Math.atan2(dy, dx);
-    // tangentStart points in the negative direction (index 0), so flip the angle
-    state.midTangentOverrideAngle = state.drag.pointIndex === 0 ? angle + Math.PI : angle;
-    state.midTangentHalfLength = Math.max(MIN_MIDPOINT_TANGENT_HALF_LENGTH, dist);
+  } else if (state.drag.type === "mid-tangent-handle") {
+    solveMiddleControlFromHandle(state.drag.pointIndex === 0, position);
   }
   draw();
 });
