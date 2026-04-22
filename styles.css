@@ -42,3 +42,13 @@ body {
   touch-action: none;
   cursor: crosshair;
 }
+
+.derivative-canvas {
+  display: block;
+  width: 100%;
+  height: auto;
+  background: #ffffff;
+  border: 1px solid #ccd1db;
+  border-radius: 0.5rem;
+  box-shadow: 0 4px 14px rgba(26, 32, 44, 0.08);
+}

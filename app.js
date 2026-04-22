@@ -1,5 +1,9 @@
 const canvas = document.getElementById("bezierCanvas");
 const ctx = canvas.getContext("2d");
+const deriv1Canvas = document.getElementById("deriv1Canvas");
+const deriv1Ctx = deriv1Canvas.getContext("2d");
+const deriv2Canvas = document.getElementById("deriv2Canvas");
+const deriv2Ctx = deriv2Canvas.getContext("2d");
 const orderInput = document.getElementById("orderInput");
 const bgImageInput = document.getElementById("bgImageInput");
 const zoomInButton = document.getElementById("zoomInButton");
@@ -74,6 +78,26 @@ function evaluateBezierDerivative(points, t) {
     y: degree * (points[i + 1].y - points[i].y),
   }));
   return evaluateBezier(derivativePoints, t);
+}
+
+function evaluateBezierSecondDerivative(points, t) {
+  const degree = points.length - 1;
+  if (degree <= 1) {
+    return { x: 0, y: 0 };
+  }
+  const d1Points = Array.from({ length: degree }, (_, i) => ({
+    x: degree * (points[i + 1].x - points[i].x),
+    y: degree * (points[i + 1].y - points[i].y),
+  }));
+  const deg1 = d1Points.length - 1;
+  if (deg1 <= 0) {
+    return { x: 0, y: 0 };
+  }
+  const d2Points = Array.from({ length: deg1 }, (_, i) => ({
+    x: deg1 * (d1Points[i + 1].x - d1Points[i].x),
+    y: deg1 * (d1Points[i + 1].y - d1Points[i].y),
+  }));
+  return evaluateBezier(d2Points, t);
 }
 
 function binomial(n, k) {
@@ -248,6 +272,184 @@ function getViewportCenter() {
   return { x: rect.width / 2, y: rect.height / 2 };
 }
 
+// Rounds maxAbs up to a "nice" number (1, 2, or 5 times a power of ten) for y-axis scaling.
+function niceYMax(maxAbs) {
+  if (maxAbs === 0) return 1;
+  const magnitude = Math.pow(10, Math.floor(Math.log10(maxAbs)));
+  const normalized = maxAbs / magnitude;
+  const nice = normalized <= 1 ? 1 : normalized <= 2 ? 2 : normalized <= 5 ? 5 : 10;
+  return nice * magnitude;
+}
+
+function formatAxisValue(v) {
+  if (v === 0) return "0";
+  const abs = Math.abs(v);
+  if (abs >= 10000 || abs < 0.01) return v.toExponential(1);
+  if (abs >= 1000) return v.toFixed(0);
+  if (abs >= 100) return v.toFixed(1);
+  if (abs >= 10) return v.toFixed(2);
+  return v.toFixed(3);
+}
+
+// Samples the first and second derivatives at CURVE_SAMPLE_COUNT+1 evenly-spaced t values.
+// Arc length (chord-length approximation) is accumulated and used as the x-axis for both graphs.
+// Returns { samples1, samples2, totalArcLength } where each sample is { s, x, y }.
+function buildDerivativeSamples() {
+  if (state.points.length < 2) {
+    return { samples1: [], samples2: [], totalArcLength: 0 };
+  }
+  const n = CURVE_SAMPLE_COUNT;
+  const samples1 = [];
+  const samples2 = [];
+  let arcLen = 0;
+  let prevPoint = evaluateBezier(state.points, 0);
+  for (let i = 0; i <= n; i += 1) {
+    const t = i / n;
+    const point = evaluateBezier(state.points, t);
+    if (i > 0) {
+      arcLen += Math.hypot(point.x - prevPoint.x, point.y - prevPoint.y);
+    }
+    prevPoint = point;
+    const d1 = evaluateBezierDerivative(state.points, t);
+    const d2 = evaluateBezierSecondDerivative(state.points, t);
+    samples1.push({ s: arcLen, x: d1.x, y: d1.y });
+    samples2.push({ s: arcLen, x: d2.x, y: d2.y });
+  }
+  return { samples1, samples2, totalArcLength: arcLen };
+}
+
+const DERIV_GRAPH_PADDING = { left: 62, right: 20, top: 30, bottom: 38 };
+
+// Draws a derivative graph (x- and y-components as separate colored lines) onto a canvas.
+// Horizontal axis: arc length (0–100% of total). Vertical axis: auto-scaled to data range.
+function drawDerivativeGraph(cvs, dctx, title, samples, totalArcLength) {
+  const W = cvs.width;
+  const H = cvs.height;
+  const { left: PL, right: PR, top: PT, bottom: PB } = DERIV_GRAPH_PADDING;
+  const plotW = W - PL - PR;
+  const plotH = H - PT - PB;
+
+  dctx.setTransform(1, 0, 0, 1, 0, 0);
+  dctx.clearRect(0, 0, W, H);
+  dctx.fillStyle = "#ffffff";
+  dctx.fillRect(0, 0, W, H);
+
+  if (samples.length === 0 || totalArcLength === 0) return;
+
+  let maxAbs = 0;
+  for (const sample of samples) {
+    maxAbs = Math.max(maxAbs, Math.abs(sample.x), Math.abs(sample.y));
+  }
+  const yMax = niceYMax(maxAbs);
+
+  const toPlotX = (s) => PL + (s / totalArcLength) * plotW;
+  const toPlotY = (v) => PT + plotH / 2 - (v / yMax) * (plotH / 2);
+
+  // Horizontal grid lines at ±100%, ±50%, and zero
+  dctx.lineWidth = 1;
+  for (const frac of [-1, -0.5, 0.5, 1]) {
+    dctx.strokeStyle = "#eceef4";
+    dctx.beginPath();
+    dctx.moveTo(PL, toPlotY(frac * yMax));
+    dctx.lineTo(PL + plotW, toPlotY(frac * yMax));
+    dctx.stroke();
+  }
+  dctx.strokeStyle = "#c8ccd8";
+  dctx.beginPath();
+  dctx.moveTo(PL, toPlotY(0));
+  dctx.lineTo(PL + plotW, toPlotY(0));
+  dctx.stroke();
+
+  // Y axis labels
+  dctx.fillStyle = "#666b7a";
+  dctx.font = "11px Arial";
+  dctx.textAlign = "right";
+  dctx.textBaseline = "middle";
+  for (const frac of [-1, -0.5, 0, 0.5, 1]) {
+    dctx.fillText(formatAxisValue(frac * yMax), PL - 5, toPlotY(frac * yMax));
+  }
+
+  // X axis tick marks and percentage labels
+  const xAxisBottom = PT + plotH;
+  dctx.font = "11px Arial";
+  dctx.textAlign = "center";
+  dctx.textBaseline = "top";
+  for (const frac of [0, 0.25, 0.5, 0.75, 1]) {
+    const x = PL + frac * plotW;
+    dctx.strokeStyle = "#c8ccd8";
+    dctx.lineWidth = 1;
+    dctx.beginPath();
+    dctx.moveTo(x, xAxisBottom);
+    dctx.lineTo(x, xAxisBottom + 4);
+    dctx.stroke();
+    dctx.fillStyle = "#666b7a";
+    dctx.fillText(`${(frac * 100) | 0}%`, x, xAxisBottom + 5);
+  }
+
+  // X axis description
+  dctx.fillStyle = "#888fa0";
+  dctx.textBaseline = "bottom";
+  dctx.fillText("arc length", PL + plotW / 2, H - 2);
+
+  // Plot border
+  dctx.strokeStyle = "#b0b5c4";
+  dctx.lineWidth = 1;
+  dctx.strokeRect(PL, PT, plotW, plotH);
+
+  // Clip lines to the plot area
+  dctx.save();
+  dctx.beginPath();
+  dctx.rect(PL, PT, plotW, plotH);
+  dctx.clip();
+
+  dctx.lineWidth = 1.5;
+
+  dctx.strokeStyle = "#2b63ff";
+  dctx.beginPath();
+  for (let i = 0; i < samples.length; i += 1) {
+    const px = toPlotX(samples[i].s);
+    const py = toPlotY(samples[i].x);
+    if (i === 0) dctx.moveTo(px, py);
+    else dctx.lineTo(px, py);
+  }
+  dctx.stroke();
+
+  dctx.strokeStyle = "#e05252";
+  dctx.beginPath();
+  for (let i = 0; i < samples.length; i += 1) {
+    const px = toPlotX(samples[i].s);
+    const py = toPlotY(samples[i].y);
+    if (i === 0) dctx.moveTo(px, py);
+    else dctx.lineTo(px, py);
+  }
+  dctx.stroke();
+
+  dctx.restore();
+
+  // Title
+  dctx.fillStyle = "#1e1f23";
+  dctx.font = "bold 12px Arial";
+  dctx.textAlign = "left";
+  dctx.textBaseline = "top";
+  dctx.fillText(title, PL, 7);
+
+  // Legend (top-right inside plot area)
+  const lgX = PL + plotW - 4;
+  const lgY = PT + 8;
+  dctx.fillStyle = "#2b63ff";
+  dctx.fillRect(lgX - 46, lgY + 2, 14, 2);
+  dctx.fillStyle = "#555966";
+  dctx.font = "11px Arial";
+  dctx.textAlign = "left";
+  dctx.textBaseline = "middle";
+  dctx.fillText("x", lgX - 30, lgY + 3);
+  dctx.fillStyle = "#e05252";
+  dctx.fillRect(lgX - 46, lgY + 17, 14, 2);
+  dctx.fillStyle = "#555966";
+  dctx.fillText("y", lgX - 30, lgY + 18);
+}
+
+
 function setZoom(nextZoom, anchor = getViewportCenter()) {
   const previousZoom = state.zoom;
   const clampedZoom = clamp(nextZoom, state.minZoom, state.maxZoom);
@@ -361,6 +563,18 @@ function draw() {
     ctx.strokeStyle = "#5a4a0a";
     ctx.stroke();
   }
+
+  const { samples1, samples2, totalArcLength } = buildDerivativeSamples();
+  drawDerivativeGraph(
+    deriv1Canvas, deriv1Ctx,
+    "1st Derivative (dx/dt, dy/dt)",
+    samples1, totalArcLength,
+  );
+  drawDerivativeGraph(
+    deriv2Canvas, deriv2Ctx,
+    "2nd Derivative (d\u00B2x/dt\u00B2, d\u00B2y/dt\u00B2)",
+    samples2, totalArcLength,
+  );
 }
 
 canvas.addEventListener("pointerdown", (event) => {
