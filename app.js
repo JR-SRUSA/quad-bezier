@@ -16,6 +16,9 @@ const state = {
     pointIndex: -1,
     pointerId: null,
     lastPosition: null,
+    // Snapshot of the yellow midpoint position taken at drag-start for mid-tangent-handle drags.
+    // Used by the constrained quintic solve to keep the midpoint fixed while the handle moves.
+    startYellow: null,
   },
   zoom: 1,
   minZoom: 0.25,
@@ -146,6 +149,34 @@ function solveMiddleControlFromHandle(isLeft, handlePos) {
   };
 }
 
+// Constrained solve for quintic (d=5) only.
+// Given the dragged handle position and the yellow midpoint position that must stay fixed,
+// mirrors the opposite handle through yellow (newRight = 2*yellow - newLeft) and solves
+// for both P[2] and P[3] simultaneously from the two resulting linear equations:
+//   P_{0,4}(t=0.5) = newLeft  →  6·P2 + 4·P3 = 16·newLeft - P0 - 4·P1 - P4
+//   P_{1,4}(t=0.5) = newRight →  4·P2 + 6·P3 = 16·newRight - P1 - 4·P4 - P5
+// This guarantees yellow = (newLeft + newRight) / 2 = fixedYellow throughout the drag.
+function solveMiddleControlsConstrained(isLeft, handlePos, fixedYellow) {
+  const points = state.points;
+  const d = points.length - 1;
+  if (d !== 5) return;
+  const scale = Math.pow(2, d - 1); // 16
+  const newLeft = isLeft
+    ? handlePos
+    : { x: 2 * fixedYellow.x - handlePos.x, y: 2 * fixedYellow.y - handlePos.y };
+  const newRight = isLeft
+    ? { x: 2 * fixedYellow.x - handlePos.x, y: 2 * fixedYellow.y - handlePos.y }
+    : handlePos;
+  // lv = scale·newLeft - (P0 + 4·P1 + P4)
+  const lvx = scale * newLeft.x - points[0].x - 4 * points[1].x - points[4].x;
+  const lvy = scale * newLeft.y - points[0].y - 4 * points[1].y - points[4].y;
+  // rv = scale·newRight - (P1 + 4·P4 + P5)
+  const rvx = scale * newRight.x - points[1].x - 4 * points[4].x - points[5].x;
+  const rvy = scale * newRight.y - points[1].y - 4 * points[4].y - points[5].y;
+  points[2] = { x: (3 * lvx - 2 * rvx) / 10, y: (3 * lvy - 2 * rvy) / 10 };
+  points[3] = { x: (3 * rvx - 2 * lvx) / 10, y: (3 * rvy - 2 * lvy) / 10 };
+}
+
 function distancePointToSegment(point, start, end) {
   const segmentX = end.x - start.x;
   const segmentY = end.y - start.y;
@@ -177,6 +208,7 @@ function beginDrag(type, event, options = {}) {
   state.drag.pointIndex = options.pointIndex ?? -1;
   state.drag.pointerId = event.pointerId;
   state.drag.lastPosition = options.lastPosition ?? null;
+  state.drag.startYellow = options.startYellow ?? null;
   canvas.setPointerCapture(event.pointerId);
 }
 
@@ -201,6 +233,7 @@ function clearDrag(event) {
   state.drag.pointIndex = -1;
   state.drag.pointerId = null;
   state.drag.lastPosition = null;
+  state.drag.startYellow = null;
 }
 
 function setCurveOrder(order) {
@@ -349,11 +382,17 @@ canvas.addEventListener("pointerdown", (event) => {
     const handles = getDeCasteljauTangentHandles();
     if (handles) {
       if (Math.hypot(handles.left.x - position.x, handles.left.y - position.y) <= hitRadius) {
-        beginDrag("mid-tangent-handle", event, { pointIndex: 0 });
+        beginDrag("mid-tangent-handle", event, {
+          pointIndex: 0,
+          startYellow: evaluateBezier(state.points, MIDPOINT_T),
+        });
         return;
       }
       if (Math.hypot(handles.right.x - position.x, handles.right.y - position.y) <= hitRadius) {
-        beginDrag("mid-tangent-handle", event, { pointIndex: 1 });
+        beginDrag("mid-tangent-handle", event, {
+          pointIndex: 1,
+          startYellow: evaluateBezier(state.points, MIDPOINT_T),
+        });
         return;
       }
     }
@@ -425,7 +464,15 @@ canvas.addEventListener("pointermove", (event) => {
       dragControlPointByDelta(targetIndex, position);
     }
   } else if (state.drag.type === "mid-tangent-handle") {
-    solveMiddleControlFromHandle(state.drag.pointIndex === 0, position);
+    const d = state.points.length - 1;
+    if (d === 5 && state.drag.startYellow) {
+      // For quintic: mirror the opposite handle through the fixed yellow dot so the midpoint
+      // stays stationary while the dragged handle rotates or stretches the tangent.
+      solveMiddleControlsConstrained(state.drag.pointIndex === 0, position, state.drag.startYellow);
+    } else {
+      // For other degrees: back-solve for the single middle control point (yellow will move).
+      solveMiddleControlFromHandle(state.drag.pointIndex === 0, position);
+    }
   }
   draw();
 });
