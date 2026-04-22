@@ -10,7 +10,7 @@
     <main class="app">
       <section class="controls">
         <label for="orderInput">Curve order</label>
-        <input id="orderInput" type="number" min="1" max="8" value="4" />
+        <input id="orderInput" type="number" min="1" max="8" value="5" />
 
         <button id="zoomInButton" type="button">Zoom +</button>
         <button id="zoomOutButton" type="button">Zoom -</button>
@@ -21,8 +21,10 @@
       </section>
 
       <canvas id="bezierCanvas" width="1000" height="650" aria-label="Bezier editor canvas"></canvas>
-      <canvas id="deriv1Canvas" width="1000" height="220" class="derivative-canvas" aria-label="First derivative graph"></canvas>
-      <canvas id="deriv2Canvas" width="1000" height="220" class="derivative-canvas" aria-label="Second derivative graph"></canvas>
+      <div class="derivative-row">
+        <canvas id="deriv1Canvas" width="1000" height="300" class="derivative-canvas" aria-label="Tangent angle graph"></canvas>
+        <canvas id="deriv2Canvas" width="1000" height="300" class="derivative-canvas" aria-label="Curvature graph"></canvas>
+      </div>
     </main>
 
     <script src="app.js"></script>
