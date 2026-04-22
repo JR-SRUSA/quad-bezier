@@ -16,6 +16,7 @@ const CURVE_SAMPLE_COUNT = 250;
 const DEFAULT_MIDDLE_T = 0.5;
 const MIN_SPEED_SQ_THRESHOLD = 1e-10;
 const MIN_CURVATURE_MAG_THRESHOLD = 1e-7;
+const MAX_RADIUS_FOR_PLOT = 5000;
 const MIN_DETERMINANT_THRESHOLD = 1e-12;
 
 const state = {
@@ -360,7 +361,9 @@ function buildDerivativeSamples() {
     const angle = speed2 < MIN_SPEED_SQ_THRESHOLD ? 0 : Math.atan2(d1.y, d1.x) * (180 / Math.PI);
     const curvature = speed2 < MIN_SPEED_SQ_THRESHOLD ? 0 : (d1.x * d2.y - d1.y * d2.x) / Math.pow(speed2, 1.5);
     const absCurvature = Math.abs(curvature);
-    const radius = absCurvature < MIN_CURVATURE_MAG_THRESHOLD ? null : 1 / absCurvature;
+    const radius = absCurvature < MIN_CURVATURE_MAG_THRESHOLD
+      ? null
+      : Math.min(1 / absCurvature, MAX_RADIUS_FOR_PLOT);
     samplesAngle.push({ s: arcLen, v: angle });
     samplesRadius.push({ s: arcLen, v: radius });
     if (radius !== null && (!minRadiusSample || radius < minRadiusSample.v)) {
