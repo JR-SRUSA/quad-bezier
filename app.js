@@ -293,9 +293,11 @@ function setCurveOrder(order) {
 }
 
 function getMiddleTBounds() {
+  const minAttr = parseFloat(middleTInput.min);
+  const maxAttr = parseFloat(middleTInput.max);
   return {
-    min: Number(middleTInput.min) || 0.05,
-    max: Number(middleTInput.max) || 0.95,
+    min: Number.isFinite(minAttr) ? minAttr : 0.05,
+    max: Number.isFinite(maxAttr) ? maxAttr : 0.95,
   };
 }
 
@@ -356,7 +358,8 @@ function buildDerivativeSamples() {
     const speed2 = d1.x * d1.x + d1.y * d1.y;
     const angle = speed2 < MIN_SPEED_SQ_THRESHOLD ? 0 : Math.atan2(d1.y, d1.x) * (180 / Math.PI);
     const curvature = speed2 < MIN_SPEED_SQ_THRESHOLD ? 0 : (d1.x * d2.y - d1.y * d2.x) / Math.pow(speed2, 1.5);
-    const radius = Math.abs(curvature) < MIN_CURVATURE_MAG_THRESHOLD ? null : 1 / Math.abs(curvature);
+    const absCurvature = Math.abs(curvature);
+    const radius = absCurvature < MIN_CURVATURE_MAG_THRESHOLD ? null : 1 / absCurvature;
     samplesAngle.push({ s: arcLen, v: angle });
     samplesRadius.push({ s: arcLen, v: radius });
     if (radius !== null && (!minRadiusSample || radius < minRadiusSample.v)) {
@@ -608,7 +611,7 @@ function draw() {
   const { samplesAngle, samplesRadius, totalArcLength, minRadiusSample } = buildDerivativeSamples();
   if (minRadiusSample && totalArcLength > 0) {
     const lengthFraction = minRadiusSample.s / totalArcLength;
-    minRadiusInfo.textContent = `Minimum radius: ${formatAxisValue(minRadiusSample.v)} at s/L=${lengthFraction.toFixed(3)}`;
+    minRadiusInfo.textContent = `Minimum radius: ${formatAxisValue(minRadiusSample.v)} at arc fraction ${lengthFraction.toFixed(3)}`;
   } else {
     minRadiusInfo.textContent = "Minimum radius: --";
   }
