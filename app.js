@@ -14,8 +14,6 @@ const zoomOutButton = document.getElementById("zoomOutButton");
 const resetViewButton = document.getElementById("resetViewButton");
 const CURVE_SAMPLE_COUNT = 250;
 const DEFAULT_MIDDLE_T = 0.5;
-const MIN_MIDDLE_T = Number(middleTInput.min) || 0.05;
-const MAX_MIDDLE_T = Number(middleTInput.max) || 0.95;
 const MIN_SPEED_SQ_THRESHOLD = 1e-10;
 const MIN_CURVATURE_THRESHOLD = 1e-7;
 
@@ -127,9 +125,9 @@ function binomial(n, k) {
   return result;
 }
 
-// Returns the two de Casteljau level-(degree-1) points at t=0.5 for degree >= 4.
+// Returns the two de Casteljau level-(degree-1) points at state.middleT for degree >= 4.
 // These are P_{0,d-1} (left) and P_{1,d-1} (right), which together define the
-// tangent direction and position at the curve midpoint.
+// tangent direction and position at the chosen on-curve parameter.
 // For degree 3 (cubic) this is intentionally omitted: the existing orange handles P1 and P2
 // already give direct control over the full curve, so extra de Casteljau handles would
 // be redundant and confusing. Returns null for degree < 4.
@@ -294,8 +292,16 @@ function setCurveOrder(order) {
   draw();
 }
 
+function getMiddleTBounds() {
+  return {
+    min: Number(middleTInput.min) || 0.05,
+    max: Number(middleTInput.max) || 0.95,
+  };
+}
+
 function setMiddleParameter(nextT) {
-  state.middleT = clamp(nextT, MIN_MIDDLE_T, MAX_MIDDLE_T);
+  const { min, max } = getMiddleTBounds();
+  state.middleT = clamp(nextT, min, max);
   middleTInput.value = state.middleT.toFixed(2);
   middleTValue.value = state.middleT.toFixed(2);
   draw();
@@ -380,11 +386,11 @@ function drawDerivativeGraph(cvs, dctx, title, lineColor, samples, totalArcLengt
 
   if (samples.length === 0 || totalArcLength === 0) return;
 
-  const finiteSamples = samples.filter((sample) => Number.isFinite(sample.v));
-  if (finiteSamples.length === 0) return;
+  const finiteValueSamples = samples.filter((sample) => Number.isFinite(sample.v));
+  if (finiteValueSamples.length === 0) return;
 
   let yDataMax = 0;
-  for (const sample of finiteSamples) {
+  for (const sample of finiteValueSamples) {
     yDataMax = Math.max(yDataMax, centered ? Math.abs(sample.v) : sample.v);
   }
   const yMax = niceYMax(yDataMax);
