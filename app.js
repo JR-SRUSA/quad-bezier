@@ -16,6 +16,7 @@ const CURVE_SAMPLE_COUNT = 250;
 const DEFAULT_MIDDLE_T = 0.5;
 const MIN_SPEED_SQ_THRESHOLD = 1e-10;
 const MIN_CURVATURE_MAG_THRESHOLD = 1e-7;
+const MIN_DETERMINANT_THRESHOLD = 1e-12;
 
 const state = {
   order: Number(orderInput.value),
@@ -215,7 +216,7 @@ function solveMiddleControlsConstrained(isLeft, handlePos, fixedYellow) {
   const a21 = weights[1];
   const a22 = weights[2];
   const determinant = a11 * a22 - a12 * a21;
-  if (Math.abs(determinant) < 1e-12) return;
+  if (Math.abs(determinant) < MIN_DETERMINANT_THRESHOLD) return;
   points[2] = {
     x: (b1x * a22 - b2x * a12) / determinant,
     y: (b1y * a22 - b2y * a12) / determinant,
@@ -375,7 +376,7 @@ const DERIV_GRAPH_PADDING = { left: 62, right: 20, top: 30, bottom: 38 };
 // Horizontal axis: arc length (0–100% of total). Vertical axis: auto-scaled to data range.
 // samples: array of { s, v } where v is the scalar value at arc-length s.
 function drawDerivativeGraph(cvs, dctx, title, lineColor, samples, totalArcLength, options = {}) {
-  const centered = options.centered ?? true;
+  const centered = options.centered === true;
   const W = cvs.width;
   const H = cvs.height;
   const { left: PL, right: PR, top: PT, bottom: PB } = DERIV_GRAPH_PADDING;
