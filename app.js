@@ -11,6 +11,7 @@ const zoomOutButton = document.getElementById("zoomOutButton");
 const resetViewButton = document.getElementById("resetViewButton");
 const CURVE_SAMPLE_COUNT = 250;
 const MIDPOINT_T = 0.5;
+const MIN_SPEED_SQ_THRESHOLD = 1e-10;
 
 const state = {
   order: Number(orderInput.value),
@@ -291,16 +292,16 @@ function formatAxisValue(v) {
   return v.toFixed(3);
 }
 
-// Samples the first and second derivatives at CURVE_SAMPLE_COUNT+1 evenly-spaced t values.
+// Samples tangent angle (degrees) and curvature at CURVE_SAMPLE_COUNT+1 evenly-spaced t values.
 // Arc length (chord-length approximation) is accumulated and used as the x-axis for both graphs.
-// Returns { samples1, samples2, totalArcLength } where each sample is { s, x, y }.
+// Returns { samplesAngle, samplesCurvature, totalArcLength } where each sample is { s, v }.
 function buildDerivativeSamples() {
   if (state.points.length < 2) {
-    return { samples1: [], samples2: [], totalArcLength: 0 };
+    return { samplesAngle: [], samplesCurvature: [], totalArcLength: 0 };
   }
   const n = CURVE_SAMPLE_COUNT;
-  const samples1 = [];
-  const samples2 = [];
+  const samplesAngle = [];
+  const samplesCurvature = [];
   let arcLen = 0;
   let prevPoint = evaluateBezier(state.points, 0);
   for (let i = 0; i <= n; i += 1) {
@@ -312,17 +313,21 @@ function buildDerivativeSamples() {
     prevPoint = point;
     const d1 = evaluateBezierDerivative(state.points, t);
     const d2 = evaluateBezierSecondDerivative(state.points, t);
-    samples1.push({ s: arcLen, x: d1.x, y: d1.y });
-    samples2.push({ s: arcLen, x: d2.x, y: d2.y });
+    const speed2 = d1.x * d1.x + d1.y * d1.y;
+    const angle = speed2 < MIN_SPEED_SQ_THRESHOLD ? 0 : Math.atan2(d1.y, d1.x) * (180 / Math.PI);
+    const curvature = speed2 < MIN_SPEED_SQ_THRESHOLD ? 0 : (d1.x * d2.y - d1.y * d2.x) / Math.pow(speed2, 1.5);
+    samplesAngle.push({ s: arcLen, v: angle });
+    samplesCurvature.push({ s: arcLen, v: curvature });
   }
-  return { samples1, samples2, totalArcLength: arcLen };
+  return { samplesAngle, samplesCurvature, totalArcLength: arcLen };
 }
 
 const DERIV_GRAPH_PADDING = { left: 62, right: 20, top: 30, bottom: 38 };
 
-// Draws a derivative graph (x- and y-components as separate colored lines) onto a canvas.
+// Draws a scalar derivative graph (single line) onto a canvas.
 // Horizontal axis: arc length (0–100% of total). Vertical axis: auto-scaled to data range.
-function drawDerivativeGraph(cvs, dctx, title, samples, totalArcLength) {
+// samples: array of { s, v } where v is the scalar value at arc-length s.
+function drawDerivativeGraph(cvs, dctx, title, lineColor, samples, totalArcLength) {
   const W = cvs.width;
   const H = cvs.height;
   const { left: PL, right: PR, top: PT, bottom: PB } = DERIV_GRAPH_PADDING;
@@ -338,7 +343,7 @@ function drawDerivativeGraph(cvs, dctx, title, samples, totalArcLength) {
 
   let maxAbs = 0;
   for (const sample of samples) {
-    maxAbs = Math.max(maxAbs, Math.abs(sample.x), Math.abs(sample.y));
+    maxAbs = Math.max(maxAbs, Math.abs(sample.v));
   }
   const yMax = niceYMax(maxAbs);
 
@@ -396,29 +401,18 @@ function drawDerivativeGraph(cvs, dctx, title, samples, totalArcLength) {
   dctx.lineWidth = 1;
   dctx.strokeRect(PL, PT, plotW, plotH);
 
-  // Clip lines to the plot area
+  // Clip line to the plot area
   dctx.save();
   dctx.beginPath();
   dctx.rect(PL, PT, plotW, plotH);
   dctx.clip();
 
   dctx.lineWidth = 1.5;
-
-  dctx.strokeStyle = "#2b63ff";
+  dctx.strokeStyle = lineColor;
   dctx.beginPath();
   for (let i = 0; i < samples.length; i += 1) {
     const px = toPlotX(samples[i].s);
-    const py = toPlotY(samples[i].x);
-    if (i === 0) dctx.moveTo(px, py);
-    else dctx.lineTo(px, py);
-  }
-  dctx.stroke();
-
-  dctx.strokeStyle = "#e05252";
-  dctx.beginPath();
-  for (let i = 0; i < samples.length; i += 1) {
-    const px = toPlotX(samples[i].s);
-    const py = toPlotY(samples[i].y);
+    const py = toPlotY(samples[i].v);
     if (i === 0) dctx.moveTo(px, py);
     else dctx.lineTo(px, py);
   }
@@ -432,21 +426,6 @@ function drawDerivativeGraph(cvs, dctx, title, samples, totalArcLength) {
   dctx.textAlign = "left";
   dctx.textBaseline = "top";
   dctx.fillText(title, PL, 7);
-
-  // Legend (top-right inside plot area)
-  const lgX = PL + plotW - 4;
-  const lgY = PT + 8;
-  dctx.fillStyle = "#2b63ff";
-  dctx.fillRect(lgX - 46, lgY + 2, 14, 2);
-  dctx.fillStyle = "#555966";
-  dctx.font = "11px Arial";
-  dctx.textAlign = "left";
-  dctx.textBaseline = "middle";
-  dctx.fillText("x", lgX - 30, lgY + 3);
-  dctx.fillStyle = "#e05252";
-  dctx.fillRect(lgX - 46, lgY + 17, 14, 2);
-  dctx.fillStyle = "#555966";
-  dctx.fillText("y", lgX - 30, lgY + 18);
 }
 
 
@@ -564,16 +543,18 @@ function draw() {
     ctx.stroke();
   }
 
-  const { samples1, samples2, totalArcLength } = buildDerivativeSamples();
+  const { samplesAngle, samplesCurvature, totalArcLength } = buildDerivativeSamples();
   drawDerivativeGraph(
     deriv1Canvas, deriv1Ctx,
-    "1st Derivative (dx/dt, dy/dt)",
-    samples1, totalArcLength,
+    "Tangent Angle (\u00b0)",
+    "#2b63ff",
+    samplesAngle, totalArcLength,
   );
   drawDerivativeGraph(
     deriv2Canvas, deriv2Ctx,
-    "2nd Derivative (d\u00B2x/dt\u00B2, d\u00B2y/dt\u00B2)",
-    samples2, totalArcLength,
+    "Curvature (\u03ba)",
+    "#4c8f3b",
+    samplesCurvature, totalArcLength,
   );
 }
 
