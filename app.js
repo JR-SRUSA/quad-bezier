@@ -6,14 +6,11 @@ const deriv2Canvas = document.getElementById("deriv2Canvas");
 const deriv2Ctx = deriv2Canvas.getContext("2d");
 const orderInput = document.getElementById("orderInput");
 const bgImageInput = document.getElementById("bgImageInput");
-const middleTInput = document.getElementById("middleTInput");
-const middleTValue = document.getElementById("middleTValue");
 const minRadiusInfo = document.getElementById("minRadiusInfo");
 const zoomInButton = document.getElementById("zoomInButton");
 const zoomOutButton = document.getElementById("zoomOutButton");
 const resetViewButton = document.getElementById("resetViewButton");
 const CURVE_SAMPLE_COUNT = 250;
-const DEFAULT_MIDDLE_T = 0.5;
 const MIN_SPEED_SQ_THRESHOLD = 1e-10;
 const MIN_CURVATURE_MAG_THRESHOLD = 1e-7;
 const MIN_DETERMINANT_THRESHOLD = 1e-12;
@@ -370,23 +367,6 @@ function setCurveOrder(order) {
   draw();
 }
 
-function getMiddleTBounds() {
-  const minAttr = parseFloat(middleTInput.min);
-  const maxAttr = parseFloat(middleTInput.max);
-  return {
-    min: Number.isFinite(minAttr) ? minAttr : 0.05,
-    max: Number.isFinite(maxAttr) ? maxAttr : 0.95,
-  };
-}
-
-function setMiddleParameter(nextT) {
-  const { min, max } = getMiddleTBounds();
-  state.middleT = clamp(nextT, min, max);
-  middleTInput.value = state.middleT.toFixed(2);
-  middleTValue.value = state.middleT.toFixed(2);
-  draw();
-}
-
 function getViewportCenter() {
   const rect = canvas.getBoundingClientRect();
   return { x: rect.width / 2, y: rect.height / 2 };
@@ -619,6 +599,12 @@ function setZoom(nextZoom, anchor = getViewportCenter()) {
 }
 
 function draw() {
+  // Compute derivative samples first so state.middleT can auto-track the min-curvature parameter.
+  const { samplesAngle, samplesRadius, totalArcLength, minRadiusSample } = buildDerivativeSamples();
+  if (minRadiusSample) {
+    state.middleT = minRadiusSample.t;
+  }
+
   ctx.setTransform(1, 0, 0, 1, 0, 0);
   ctx.clearRect(0, 0, canvas.width, canvas.height);
 
@@ -710,6 +696,7 @@ function draw() {
   });
 
   if (showMidHandle) {
+    // Yellow dot is always placed at the minimum-curvature (tightest-bend) point on the curve.
     const midpoint = evaluateBezier(state.points, state.middleT);
     ctx.beginPath();
     ctx.arc(midpoint.x, midpoint.y, 6 / state.zoom, 0, Math.PI * 2);
@@ -720,42 +707,23 @@ function draw() {
     ctx.stroke();
   }
 
-  const { samplesAngle, samplesRadius, totalArcLength, minRadiusSample } = buildDerivativeSamples();
   if (minRadiusSample && totalArcLength > 0) {
     const lengthFraction = minRadiusSample.s / totalArcLength;
-    minRadiusInfo.textContent = `Minimum radius: ${formatAxisValue(minRadiusSample.v)} at arc fraction ${lengthFraction.toFixed(3)}`;
+    minRadiusInfo.textContent = `Minimum radius: ${formatAxisValue(minRadiusSample.v)} at arc fraction ${lengthFraction.toFixed(3)} (t\u2009=\u2009${minRadiusSample.t.toFixed(3)})`;
   } else {
     minRadiusInfo.textContent = "Minimum radius: --";
   }
 
-  // Draw a red diamond on the spline at the minimum-radius (tightest-bend) point.
-  if (minRadiusSample) {
-    const minRpt = evaluateBezier(state.points, minRadiusSample.t);
-    const ds = 7 / state.zoom;
-    ctx.save();
-    ctx.translate(minRpt.x, minRpt.y);
-    ctx.rotate(Math.PI / 4);
-    ctx.beginPath();
-    ctx.rect(-ds / 2, -ds / 2, ds, ds);
-    ctx.fillStyle = "#cc3b2e";
-    ctx.fill();
-    ctx.lineWidth = 1.5 / state.zoom;
-    ctx.strokeStyle = "#1e1f23";
-    ctx.stroke();
-    ctx.restore();
-  }
-
-  // Arc-length position of the current middle-parameter handle, used to draw a marker line on
-  // both derivative graphs so the slider's effect is immediately visible.
-  const middleTSampleIdx = Math.min(Math.round(state.middleT * CURVE_SAMPLE_COUNT), CURVE_SAMPLE_COUNT);
-  const middleTArcLength = samplesAngle[middleTSampleIdx]?.s ?? 0;
-  const middleTMarker = { s: middleTArcLength, color: "#b06000", label: "t" };
+  // Marker line at the min-curvature point, shown on both derivative graphs.
+  const minRMarker = minRadiusSample
+    ? { s: minRadiusSample.s, color: "#cc3b2e", label: "R\u2098\u1d62\u2099" }
+    : null;
 
   drawDerivativeGraph(
     deriv1Canvas, deriv1Ctx,
     "Tangent Angle (\u00b0)",
     "#2b63ff",
-    samplesAngle, totalArcLength, { centered: true, markerLines: [middleTMarker] },
+    samplesAngle, totalArcLength, { centered: true, markerLines: minRMarker ? [minRMarker] : [] },
   );
   drawDerivativeGraph(
     deriv2Canvas, deriv2Ctx,
@@ -763,10 +731,7 @@ function draw() {
     "#4c8f3b",
     samplesRadius, totalArcLength, {
       centered: false,
-      markerLines: [
-        middleTMarker,
-        ...(minRadiusSample ? [{ s: minRadiusSample.s, color: "#cc3b2e", label: "R\u2098\u1d62\u2099" }] : []),
-      ],
+      markerLines: minRMarker ? [minRMarker] : [],
     },
   );
 }
@@ -909,9 +874,6 @@ canvas.addEventListener(
 orderInput.addEventListener("change", () => {
   setCurveOrder(Number(orderInput.value));
 });
-middleTInput.addEventListener("input", () => {
-  setMiddleParameter(Number(middleTInput.value));
-});
 
 zoomInButton.addEventListener("click", () => setZoom(state.zoom * 1.2));
 zoomOutButton.addEventListener("click", () => setZoom(state.zoom / 1.2));
@@ -959,4 +921,3 @@ bgImageInput.addEventListener("change", (event) => {
 });
 
 setCurveOrder(state.order);
-setMiddleParameter(DEFAULT_MIDDLE_T);
