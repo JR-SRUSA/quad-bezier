@@ -18,7 +18,7 @@ const MIN_DETERMINANT_THRESHOLD = 1e-12;
 const state = {
   order: Number(orderInput.value),
   points: [],
-  middleT: DEFAULT_MIDDLE_T,
+  middleT: 0.5, // auto-updated to min-curvature parameter on each draw
   drag: {
     type: null,
     pointIndex: -1,
