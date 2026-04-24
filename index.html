@@ -19,6 +19,12 @@
         <label for="bgImageInput">Background image</label>
         <input id="bgImageInput" type="file" accept="image/*" />
 
+        <fieldset class="move-mode-group">
+          <legend>Move point</legend>
+          <label><input type="radio" name="moveMode" id="moveMidpointInput" value="midpoint" checked> Midpoint (t=0.5)</label>
+          <label><input type="radio" name="moveMode" id="moveMinCurvInput" value="mincurvature"> Min Curvature</label>
+        </fieldset>
+
         <span id="minRadiusInfo" class="metric-text" aria-live="polite">Minimum radius: --</span>
       </section>
 

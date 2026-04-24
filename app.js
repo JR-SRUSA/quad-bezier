@@ -10,6 +10,8 @@ const minRadiusInfo = document.getElementById("minRadiusInfo");
 const zoomInButton = document.getElementById("zoomInButton");
 const zoomOutButton = document.getElementById("zoomOutButton");
 const resetViewButton = document.getElementById("resetViewButton");
+const moveMidpointInput = document.getElementById("moveMidpointInput");
+const moveMinCurvInput = document.getElementById("moveMinCurvInput");
 const CURVE_SAMPLE_COUNT = 250;
 const MIN_SPEED_SQ_THRESHOLD = 1e-10;
 const MIN_CURVATURE_MAG_THRESHOLD = 1e-7;
@@ -18,7 +20,8 @@ const MIN_DETERMINANT_THRESHOLD = 1e-12;
 const state = {
   order: Number(orderInput.value),
   points: [],
-  middleT: 0.5, // auto-updated to min-curvature parameter on each draw
+  middleT: 0.5, // parameter for the active moving point; tracks min-curvature t or stays at 0.5 depending on movingMode
+  movingMode: "midpoint", // "midpoint" | "mincurvature"
   drag: {
     type: null,
     pointIndex: -1,
@@ -393,15 +396,17 @@ function formatAxisValue(v) {
 
 // Samples tangent angle (degrees) and radius of curvature at CURVE_SAMPLE_COUNT+1 evenly-spaced t values.
 // Arc length (chord-length approximation) is accumulated and used as the x-axis for both graphs.
-// Returns { samplesAngle, samplesRadius, totalArcLength, minRadiusSample } where each sample is { s, v }.
+// Returns { samplesAngle, samplesRadius, totalArcLength, minRadiusSample, midpointArcS } where each sample is { s, v }.
+// midpointArcS is the accumulated arc length at t=0.5 (i.e. at sample index CURVE_SAMPLE_COUNT/2).
 function buildDerivativeSamples() {
   if (state.points.length < 2) {
-    return { samplesAngle: [], samplesRadius: [], totalArcLength: 0, minRadiusSample: null };
+    return { samplesAngle: [], samplesRadius: [], totalArcLength: 0, minRadiusSample: null, midpointArcS: 0 };
   }
   const n = CURVE_SAMPLE_COUNT;
   const samplesAngle = [];
   const samplesRadius = [];
   let minRadiusSample = null;
+  let midpointArcS = 0;
   let arcLen = 0;
   let prevPoint = evaluateBezier(state.points, 0);
   for (let i = 0; i <= n; i += 1) {
@@ -411,6 +416,9 @@ function buildDerivativeSamples() {
       arcLen += Math.hypot(point.x - prevPoint.x, point.y - prevPoint.y);
     }
     prevPoint = point;
+    if (i === n / 2) {
+      midpointArcS = arcLen;
+    }
     const d1 = evaluateBezierDerivative(state.points, t);
     const d2 = evaluateBezierSecondDerivative(state.points, t);
     const speed2 = d1.x * d1.x + d1.y * d1.y;
@@ -426,7 +434,7 @@ function buildDerivativeSamples() {
       minRadiusSample = { s: arcLen, v: radius, t };
     }
   }
-  return { samplesAngle, samplesRadius, totalArcLength: arcLen, minRadiusSample };
+  return { samplesAngle, samplesRadius, totalArcLength: arcLen, minRadiusSample, midpointArcS };
 }
 
 const DERIV_GRAPH_PADDING = { left: 62, right: 20, top: 30, bottom: 38 };
@@ -599,10 +607,13 @@ function setZoom(nextZoom, anchor = getViewportCenter()) {
 }
 
 function draw() {
-  // Compute derivative samples first so state.middleT can auto-track the min-curvature parameter.
-  const { samplesAngle, samplesRadius, totalArcLength, minRadiusSample } = buildDerivativeSamples();
-  if (minRadiusSample) {
+  // Compute derivative samples first so we know the min-curvature parameter.
+  const { samplesAngle, samplesRadius, totalArcLength, minRadiusSample, midpointArcS } = buildDerivativeSamples();
+  // Update middleT based on the current moving mode.
+  if (state.movingMode === "mincurvature" && minRadiusSample) {
     state.middleT = minRadiusSample.t;
+  } else if (state.movingMode === "midpoint") {
+    state.middleT = 0.5;
   }
 
   ctx.setTransform(1, 0, 0, 1, 0, 0);
@@ -696,8 +707,26 @@ function draw() {
   });
 
   if (showMidHandle) {
-    // Yellow dot is always placed at the minimum-curvature (tightest-bend) point on the curve.
-    const midpoint = evaluateBezier(state.points, state.middleT);
+    // Determine the active (moving) t and the inactive (display-only) t.
+    const activeT = state.middleT;
+    const inactiveT = state.movingMode === "midpoint"
+      ? (minRadiusSample ? minRadiusSample.t : null)
+      : 0.5;
+
+    // Draw the inactive (gray) dot first so the active dot renders on top.
+    if (inactiveT !== null) {
+      const inactivePoint = evaluateBezier(state.points, inactiveT);
+      ctx.beginPath();
+      ctx.arc(inactivePoint.x, inactivePoint.y, 6 / state.zoom, 0, Math.PI * 2);
+      ctx.fillStyle = "#d0d3db";
+      ctx.fill();
+      ctx.lineWidth = 1.5 / state.zoom;
+      ctx.strokeStyle = "#8a8f9e";
+      ctx.stroke();
+    }
+
+    // Draw the active (yellow) dot that the user can drag.
+    const midpoint = evaluateBezier(state.points, activeT);
     ctx.beginPath();
     ctx.arc(midpoint.x, midpoint.y, 6 / state.zoom, 0, Math.PI * 2);
     ctx.fillStyle = "#ffec9a";
@@ -714,16 +743,32 @@ function draw() {
     minRadiusInfo.textContent = "Minimum radius: --";
   }
 
-  // Marker line at the min-curvature point, shown on both derivative graphs.
-  const minRMarker = minRadiusSample
-    ? { s: minRadiusSample.s, color: "#cc3b2e", label: "R\u2098\u1d62\u2099" }
-    : null;
+  // Build marker lines for both derivative graphs:
+  // - min-curvature marker (colored when active, gray when inactive)
+  // - midpoint t=0.5 marker (colored when active, gray when inactive)
+  const markerLines = [];
+  if (minRadiusSample) {
+    const isActive = state.movingMode === "mincurvature";
+    markerLines.push({
+      s: minRadiusSample.s,
+      color: isActive ? "#cc3b2e" : "#b0b5c4",
+      label: "R\u2098\u1d62\u2099",
+    });
+  }
+  if (totalArcLength > 0 && state.points.length > 1) {
+    const isActive = state.movingMode === "midpoint";
+    markerLines.push({
+      s: midpointArcS,
+      color: isActive ? "#8b6914" : "#b0b5c4",
+      label: "t\u00bd",
+    });
+  }
 
   drawDerivativeGraph(
     deriv1Canvas, deriv1Ctx,
     "Tangent Angle (\u00b0)",
     "#2b63ff",
-    samplesAngle, totalArcLength, { centered: true, markerLines: minRMarker ? [minRMarker] : [] },
+    samplesAngle, totalArcLength, { centered: true, markerLines },
   );
   drawDerivativeGraph(
     deriv2Canvas, deriv2Ctx,
@@ -731,7 +776,7 @@ function draw() {
     "#4c8f3b",
     samplesRadius, totalArcLength, {
       centered: false,
-      markerLines: minRMarker ? [minRMarker] : [],
+      markerLines,
     },
   );
 }
@@ -918,6 +963,15 @@ bgImageInput.addEventListener("change", (event) => {
     draw();
   };
   image.src = objectURL;
+});
+
+moveMidpointInput.addEventListener("change", () => {
+  state.movingMode = "midpoint";
+  draw();
+});
+moveMinCurvInput.addEventListener("change", () => {
+  state.movingMode = "mincurvature";
+  draw();
 });
 
 setCurveOrder(state.order);
