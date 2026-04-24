@@ -12,12 +12,20 @@
         <label for="orderInput">Curve order</label>
         <input id="orderInput" type="number" min="1" max="8" value="5" />
 
+        <button id="undoButton" type="button" disabled>Undo</button>
+
         <button id="zoomInButton" type="button">Zoom +</button>
         <button id="zoomOutButton" type="button">Zoom -</button>
         <button id="resetViewButton" type="button">Reset View</button>
 
         <label for="bgImageInput">Background image</label>
         <input id="bgImageInput" type="file" accept="image/*" />
+
+        <fieldset class="move-mode-group">
+          <legend>Move point</legend>
+          <label><input type="radio" name="moveMode" id="moveMidpointInput" value="midpoint" checked> Midpoint (t=0.5)</label>
+          <label><input type="radio" name="moveMode" id="moveMinCurvInput" value="mincurvature"> Min Curvature</label>
+        </fieldset>
 
         <span id="minRadiusInfo" class="metric-text" aria-live="polite">Minimum radius: --</span>
       </section>
