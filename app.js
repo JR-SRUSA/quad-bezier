@@ -12,6 +12,8 @@ const zoomOutButton = document.getElementById("zoomOutButton");
 const resetViewButton = document.getElementById("resetViewButton");
 const moveMidpointInput = document.getElementById("moveMidpointInput");
 const moveMinCurvInput = document.getElementById("moveMinCurvInput");
+const undoButton = document.getElementById("undoButton");
+const MAX_HISTORY = 50;
 const CURVE_SAMPLE_COUNT = 250;
 const MIN_SPEED_SQ_THRESHOLD = 1e-10;
 const MIN_CURVATURE_MAG_THRESHOLD = 1e-7;
@@ -20,6 +22,7 @@ const MIN_DETERMINANT_THRESHOLD = 1e-12;
 const state = {
   order: Number(orderInput.value),
   points: [],
+  history: [], // stack of deep-copied points snapshots for undo
   middleT: 0.5, // parameter for the active moving point; tracks min-curvature t or stays at 0.5 depending on movingMode
   movingMode: "midpoint", // "midpoint" | "mincurvature"
   drag: {
@@ -42,6 +45,26 @@ const state = {
 
 function clamp(value, min, max) {
   return Math.min(max, Math.max(min, value));
+}
+
+// Saves a deep copy of the current control points onto the undo stack.
+// Trims to MAX_HISTORY entries so memory use stays bounded.
+function pushHistory() {
+  state.history.push(state.points.map((p) => ({ ...p })));
+  if (state.history.length > MAX_HISTORY) {
+    state.history.shift();
+  }
+  undoButton.disabled = false;
+}
+
+// Restores the most recent saved snapshot and redraws.
+function undo() {
+  if (state.history.length === 0) return;
+  state.points = state.history.pop();
+  if (state.history.length === 0) {
+    undoButton.disabled = true;
+  }
+  draw();
 }
 
 function toWorldCoordinates(clientX, clientY) {
@@ -315,6 +338,7 @@ function getMiddleControlTargetIndex() {
 }
 
 function beginDrag(type, event, options = {}) {
+  pushHistory();
   state.drag.type = type;
   state.drag.pointIndex = options.pointIndex ?? -1;
   state.drag.pointerId = event.pointerId;
@@ -352,6 +376,7 @@ function setCurveOrder(order) {
   orderInput.value = String(newOrder);
   const currentOrder = state.points.length - 1;
   if (state.points.length > 0 && currentOrder !== newOrder) {
+    pushHistory();
     let pts = state.points;
     if (newOrder > currentOrder) {
       for (let d = currentOrder; d < newOrder; d += 1) {
@@ -416,7 +441,7 @@ function buildDerivativeSamples() {
       arcLen += Math.hypot(point.x - prevPoint.x, point.y - prevPoint.y);
     }
     prevPoint = point;
-    if (i === n / 2) {
+    if (i === Math.floor(n / 2)) {
       midpointArcS = arcLen;
     }
     const d1 = evaluateBezierDerivative(state.points, t);
@@ -972,6 +997,15 @@ moveMidpointInput.addEventListener("change", () => {
 moveMinCurvInput.addEventListener("change", () => {
   state.movingMode = "mincurvature";
   draw();
+});
+
+undoButton.addEventListener("click", undo);
+
+document.addEventListener("keydown", (event) => {
+  if ((event.ctrlKey || event.metaKey) && event.key === "z" && !event.shiftKey) {
+    event.preventDefault();
+    undo();
+  }
 });
 
 setCurveOrder(state.order);
